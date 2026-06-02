@@ -1,0 +1,4 @@
+# clippy configuration
+avoid-breaking-exported-api = true
+too-many-arguments-threshold = 8
+type-complexity-threshold = 350

@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AciCommandContract",
+  "description": "The core ACI (Agent-Computer Interface) contract returned by CmdHub search and execution.",
+  "type": "object",
+  "properties": {
+    "app_id": {
+      "type": "string",
+      "description": "Unique identifier of the application (e.g., 'org.github.mtoyoda.sl')"
+    },
+    "name": {
+      "type": "string",
+      "description": "The base command alias used in the terminal (e.g., 'sl')"
+    },
+    "cmd_path": {
+      "type": "string",
+      "description": "The materialized path to this specific sub-command or argument (e.g., 'sl.-l')"
+    },
+    "node_type": {
+      "type": "string",
+      "enum": ["root", "sub", "arg"],
+      "description": "Hierarchical level of the command"
+    },
+    "description": {
+      "type": "string",
+      "description": "Highly refined, Agent-friendly description of what this command/flag does."
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["safe", "medium", "dangerous"],
+      "description": "Security rating for execution gating."
+    },
+    "example_template": {
+      "type": "string",
+      "description": "A ready-to-execute string template (e.g., 'sl -l'). Agents can inject dynamic values here."
+    },
+    "install_instructions": {
+      "type": "object",
+      "properties": {
+        "brew": { "type": "string" },
+        "apt": { "type": "string" },
+        "pacman": { "type": "string" },
+        "cargo": { "type": "string" }
+      },
+      "description": "Cross-platform installation commands if the tool is missing locally.",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+  "required": ["app_id", "name", "cmd_path", "node_type", "description", "risk_level"],
+  "additionalProperties": false
+}

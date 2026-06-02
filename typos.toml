@@ -1,0 +1,20 @@
+# typos configuration — spell checker for source code
+# https://github.com/crate-ci/typos
+[files]
+extend-exclude = [
+  "CHANGELOG.md",
+  "*.lock",
+  "*.min.js",
+  "*.min.css",
+]
+
+[default.extend-words]
+# Add project-specific false positives here
+# e.g., ght = "ght"
+cmdh = "cmdh"
+cmdhub = "cmdhub"
+aci = "aci"
+fts = "fts"
+rrf = "rrf"
+pgvector = "pgvector"
+sqlite_vec = "sqlite_vec"

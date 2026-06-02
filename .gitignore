@@ -1,0 +1,29 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+!.env.example
+
+# Coverage
+*.profraw
+lcov.info
+tarpaulin-report.html
+
+# Pre-commit
+.pre-commit-cache/
+
+# Schema test artifacts
+schemas/*.test.json
