@@ -13,8 +13,9 @@ cmdhub-oss/                  # This repository (open-source)
 ├── cmdhub-cli/              # cmdh — local CLI client (Rust)
 ├── cmdhub-mcp/              # MCP server for IDE/Agent integration
 ├── cmdhub-shared/           # Shared types and ACI schema definitions
+├── cmdhub-skills/           # Plugin/skill system
 ├── AGENTS.md                # AI coding agent instructions
-└── docs/                    # → cmdhub-docs (separate repo)
+└── schemas/                 # ACI JSON Schema definitions
 ```
 
 ### Key Features
