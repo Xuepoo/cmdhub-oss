@@ -1,0 +1,44 @@
+# Build stage artifacts
+target/
+**/*.rs.bk
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Coverage & profiling
+*.profraw
+lcov.info
+tarpaulin-report.html
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in image)
+*.md
+!LICENSE
+docs/
+
+# CI/CD
+.github/
+.pre-commit-config.yaml
+
+# Test artifacts
+tests/
+benches/
+
+# Cargo config
+.cargo/

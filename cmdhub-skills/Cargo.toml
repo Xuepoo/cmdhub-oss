@@ -1,23 +1,15 @@
 [package]
-name = "cmdhub-mcp"
+name = "cmdhub-skills"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MCP (Model Context Protocol) server for CmdHub — enables AI Agents to search and execute CLI commands"
-
-[[bin]]
-name = "cmdhub-mcp"
-path = "src/main.rs"
+description = "Plugin/skill system for CmdHub — extensible command discovery and execution strategies"
 
 [dependencies]
 cmdhub-shared = { path = "../cmdhub-shared" }
-clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
-rusqlite = { workspace = true }
-directories = { workspace = true }
