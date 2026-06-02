@@ -11,15 +11,18 @@ COPY Cargo.toml Cargo.lock ./
 COPY cmdhub-shared/Cargo.toml cmdhub-shared/Cargo.toml
 COPY cmdhub-cli/Cargo.toml cmdhub-cli/Cargo.toml
 COPY cmdhub-mcp/Cargo.toml cmdhub-mcp/Cargo.toml
-RUN mkdir -p cmdhub-shared/src cmdhub-cli/src cmdhub-mcp/src && \
+COPY cmdhub-skills/Cargo.toml cmdhub-skills/Cargo.toml
+RUN mkdir -p cmdhub-shared/src cmdhub-cli/src cmdhub-mcp/src cmdhub-skills/src && \
     echo 'fn main() {}' > cmdhub-cli/src/main.rs && \
     echo 'fn main() {}' > cmdhub-mcp/src/main.rs && \
     echo '' > cmdhub-shared/src/lib.rs && \
-    cargo build --release && rm -rf cmdhub-shared/src cmdhub-cli/src cmdhub-mcp/src
+    echo '' > cmdhub-skills/src/lib.rs && \
+    cargo build --release && \
+    rm -rf cmdhub-shared/src cmdhub-cli/src cmdhub-mcp/src cmdhub-skills/src
 
 # Build the actual binary
 COPY . .
-RUN touch cmdhub-shared/src/lib.rs cmdhub-cli/src/main.rs cmdhub-mcp/src/main.rs && \
+RUN touch cmdhub-shared/src/lib.rs cmdhub-cli/src/main.rs cmdhub-mcp/src/main.rs cmdhub-skills/src/lib.rs && \
     cargo build --release --locked -p cmdhub-cli
 
 # --- Runtime stage ---

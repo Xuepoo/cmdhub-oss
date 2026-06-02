@@ -15,6 +15,7 @@ Thumbs.db
 
 # Environment
 .env
+.env.*
 !.env.example
 
 # Coverage
@@ -27,3 +28,8 @@ tarpaulin-report.html
 
 # Schema test artifacts
 schemas/*.test.json
+
+# Internal dev docs (not for public repo)
+AGENTS.md
+CLAUDE.md
+.cursorrules
