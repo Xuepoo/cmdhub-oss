@@ -14,7 +14,6 @@ cmdhub-oss/                  # This repository (open-source)
 ├── cmdhub-mcp/              # MCP server for IDE/Agent integration
 ├── cmdhub-shared/           # Shared types and ACI schema definitions
 ├── cmdhub-skills/           # Plugin/skill system
-├── AGENTS.md                # AI coding agent instructions
 └── schemas/                 # ACI JSON Schema definitions
 ```
 
@@ -57,8 +56,6 @@ Key documents:
 - [MCP Protocol Spec](./cmdhub-docs/11-mcp-server-protocol.md)
 
 ## Development
-
-See [AGENTS.md](./AGENTS.md) for mandatory development conventions and AI agent instructions.
 
 ```bash
 # Format check
