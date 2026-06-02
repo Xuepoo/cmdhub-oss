@@ -24,8 +24,5 @@ pub enum CmdHubError {
     NotFound { query: String },
 
     #[error("Execution blocked by safety guardrail: risk_level={risk_level}, command={command}")]
-    ExecutionBlocked {
-        risk_level: String,
-        command: String,
-    },
+    ExecutionBlocked { risk_level: String, command: String },
 }
