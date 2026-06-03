@@ -2,7 +2,7 @@
 # Produces minimal runtime images for both amd64 and arm64
 
 # --- Build stage ---
-FROM rust:latest AS builder
+FROM docker.io/library/rust:latest AS builder
 
 WORKDIR /build
 
@@ -12,8 +12,10 @@ COPY cmdhub-shared/Cargo.toml cmdhub-shared/Cargo.toml
 COPY cmdhub-cli/Cargo.toml cmdhub-cli/Cargo.toml
 COPY cmdhub-mcp/Cargo.toml cmdhub-mcp/Cargo.toml
 COPY cmdhub-skills/Cargo.toml cmdhub-skills/Cargo.toml
-RUN mkdir -p cmdhub-shared/src cmdhub-cli/src cmdhub-mcp/src cmdhub-skills/src && \
+RUN mkdir -p cmdhub-shared/src cmdhub-cli/src cmdhub-cli/src/bin cmdhub-mcp/src cmdhub-skills/src && \
     echo 'fn main() {}' > cmdhub-cli/src/main.rs && \
+    echo 'fn main() {}' > cmdhub-cli/src/bin/extractor.rs && \
+    echo '' > cmdhub-cli/src/lib.rs && \
     echo 'fn main() {}' > cmdhub-mcp/src/main.rs && \
     echo '' > cmdhub-shared/src/lib.rs && \
     echo '' > cmdhub-skills/src/lib.rs && \
@@ -22,11 +24,11 @@ RUN mkdir -p cmdhub-shared/src cmdhub-cli/src cmdhub-mcp/src cmdhub-skills/src &
 
 # Build the actual binary
 COPY . .
-RUN touch cmdhub-shared/src/lib.rs cmdhub-cli/src/main.rs cmdhub-mcp/src/main.rs cmdhub-skills/src/lib.rs && \
+RUN touch cmdhub-shared/src/lib.rs cmdhub-cli/src/lib.rs cmdhub-cli/src/main.rs cmdhub-cli/src/bin/extractor.rs cmdhub-mcp/src/main.rs cmdhub-skills/src/lib.rs && \
     cargo build --release --locked -p cmdhub-cli
 
 # --- Runtime stage ---
-FROM debian:bookworm-slim AS runtime
+FROM docker.io/library/debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
