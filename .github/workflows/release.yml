@@ -68,7 +68,7 @@ jobs:
 
       - name: Build release binary with cross
         if: matrix.cross
-        run: cross build --release --locked --target ${{ matrix.target }} -p cmdhub-cli -e CFLAGS="${{ env.CFLAGS }}"
+        run: cross -e CFLAGS="${{ env.CFLAGS }}" build --release --locked --target ${{ matrix.target }} -p cmdhub-cli
 
       - name: Build release binary with cargo
         if: ${{ !matrix.cross }}
