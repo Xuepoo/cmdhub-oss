@@ -40,6 +40,22 @@ pub struct InstallInstructions {
     pub pacman: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cargo: Option<String>,
+
+    #[serde(flatten)]
+    #[serde(default)]
+    pub others: std::collections::HashMap<String, String>,
+}
+
+impl InstallInstructions {
+    pub fn get_command(&self, key: &str) -> Option<&String> {
+        match key {
+            "brew" => self.brew.as_ref(),
+            "apt" => self.apt.as_ref(),
+            "pacman" => self.pacman.as_ref(),
+            "cargo" => self.cargo.as_ref(),
+            _ => self.others.get(key),
+        }
+    }
 }
 
 /// The core ACI command contract returned by CmdHub search.
@@ -345,6 +361,7 @@ mod tests {
                 apt: Some("sudo apt install sl".to_string()),
                 pacman: None,
                 cargo: None,
+                ..Default::default()
             }),
         };
 
@@ -389,5 +406,29 @@ mod tests {
             reconstructed.install_instructions.as_ref().unwrap().brew,
             Some("brew install sl".to_string())
         );
+    }
+
+    #[test]
+    fn test_install_instructions_flattened_others() {
+        let json_data = r#"{
+            "brew": "brew install git",
+            "dnf": "dnf install -y git",
+            "apk": "apk add git"
+        }"#;
+        let inst: InstallInstructions = serde_json::from_str(json_data).unwrap();
+        assert_eq!(inst.brew.as_deref(), Some("brew install git"));
+        assert_eq!(
+            inst.get_command("brew").map(|s| s.as_str()),
+            Some("brew install git")
+        );
+        assert_eq!(
+            inst.get_command("dnf").map(|s| s.as_str()),
+            Some("dnf install -y git")
+        );
+        assert_eq!(
+            inst.get_command("apk").map(|s| s.as_str()),
+            Some("apk add git")
+        );
+        assert_eq!(inst.get_command("pacman"), None);
     }
 }
