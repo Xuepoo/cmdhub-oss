@@ -178,3 +178,28 @@ jobs:
         run: cargo publish --locked -p cmdhub-mcp
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Update AUR package
+  # ---------------------------------------------------------------------------
+  publish-aur:
+    name: Update AUR Package
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux artifact checksum
+        uses: actions/download-artifact@v4
+        with:
+          name: build-x86_64-unknown-linux-musl
+          path: artifacts
+
+      - name: Publish cmdh-bin to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3
+        with:
+          pkgname: cmdh-bin
+          pkgbuild: ./packaging/aur/PKGBUILD
+          commit_username: Xuepoo
+          commit_email: xuepoo@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "chore: update to ${{ github.ref_name }}"
