@@ -4,8 +4,9 @@ use clap::{Parser, Subcommand};
 pub mod config;
 pub mod db;
 pub mod inference;
-pub mod installer;
 pub mod runner;
+pub mod installer;
+pub mod os_detector;
 pub mod tokenizer;
 pub mod updater;
 
