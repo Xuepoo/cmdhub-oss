@@ -17,6 +17,10 @@ pub struct Config {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub vector: VectorConfig,
+    #[serde(default)]
+    pub output: OutputConfig,
+    #[serde(default)]
+    pub install: InstallConfig,
 }
 
 pub const OFFICIAL_PUBLIC_KEY: [u8; 32] = [
@@ -34,6 +38,8 @@ impl Default for Config {
                 .collect(),
             timeout_seconds: 30,
             vector: VectorConfig::default(),
+            output: OutputConfig::default(),
+            install: InstallConfig::default(),
         }
     }
 }
@@ -112,5 +118,74 @@ pub fn load_or_create_config(custom_path: Option<PathBuf>) -> Result<Config> {
         let toml_str = fs::read_to_string(&config_path).context("Failed to read config file")?;
         let config: Config = toml::from_str(&toml_str).context("Failed to parse config TOML")?;
         Ok(config)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OutputConfig {
+    #[serde(default = "default_output_mode")]
+    pub mode: String, // "full", "usage", "minimal"
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_output_mode(),
+        }
+    }
+}
+
+fn default_output_mode() -> String {
+    "full".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InstallConfig {
+    pub os: Option<String>,
+    #[serde(default = "default_package_managers")]
+    pub package_managers: Vec<String>,
+}
+
+impl Default for InstallConfig {
+    fn default() -> Self {
+        Self {
+            os: None,
+            package_managers: default_package_managers(),
+        }
+    }
+}
+
+fn default_package_managers() -> Vec<String> {
+    vec![
+        "uv".to_string(),
+        "npm".to_string(),
+        "cargo".to_string(),
+        "go".to_string(),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_parsing_defaults() {
+        let toml_str = r#"
+            api_url = "https://api.cmdhub.xyz"
+            public_key = "01020304"
+            timeout_seconds = 30
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.output.mode, "full");
+        assert_eq!(config.install.os, None);
+        assert_eq!(
+            config.install.package_managers,
+            vec![
+                "uv".to_string(),
+                "npm".to_string(),
+                "cargo".to_string(),
+                "go".to_string()
+            ]
+        );
     }
 }
