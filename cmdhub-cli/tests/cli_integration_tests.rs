@@ -1,0 +1,288 @@
+use cmdhub_cli::config::OFFICIAL_PUBLIC_KEY;
+use cmdhub_cli::config::{load_or_create_config, resolve_config_path};
+use cmdhub_cli::db::{init_db, open_db, search_commands};
+use cmdhub_cli::runner::{get_command_by_path, run_command};
+use cmdhub_shared::RiskLevel;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
+use std::sync::Mutex;
+use tempfile::TempDir;
+
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+#[test]
+fn test_config_resolution() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let config_dir = tmp.path().to_path_buf();
+
+    // Set XDG_CONFIG_HOME to the temp directory
+    std::env::set_var("XDG_CONFIG_HOME", &config_dir);
+
+    // Load or create config (should create it)
+    let config = load_or_create_config(None).unwrap();
+    assert_eq!(config.api_url, "https://api.cmdhub.io/v1");
+    assert_eq!(config.timeout_seconds, 30);
+
+    // Verify it exists in config path
+    let expected_path = resolve_config_path(None);
+    assert!(expected_path.exists());
+}
+
+#[test]
+fn test_config_env_override() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let env_config_path = tmp.path().join("env_config.toml");
+
+    // Set CMDH_CONFIG env var
+    std::env::set_var("CMDH_CONFIG", &env_config_path);
+
+    // Loading should fail because the override file does not exist
+    let result = load_or_create_config(None);
+    assert!(result.is_err());
+
+    // Create the file
+    let default_config = cmdhub_cli::config::Config::default();
+    let toml_str = toml::to_string_pretty(&default_config).unwrap();
+    std::fs::write(&env_config_path, toml_str).unwrap();
+
+    // Now loading should succeed
+    let config = load_or_create_config(None).unwrap();
+    assert_eq!(config.api_url, "https://api.cmdhub.io/v1");
+
+    // Verify it exists at the exact CMDH_CONFIG path
+    let expected_path = resolve_config_path(None);
+    assert_eq!(expected_path, env_config_path);
+    assert!(expected_path.exists());
+
+    // Clean up env var so it doesn't affect other tests
+    std::env::remove_var("CMDH_CONFIG");
+}
+
+#[test]
+fn test_config_custom_path_override() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let custom_path = tmp.path().join("custom_config.toml");
+
+    // Loading should fail because the custom path does not exist
+    let result = load_or_create_config(Some(custom_path.clone()));
+    assert!(result.is_err());
+
+    // Create the file
+    let default_config = cmdhub_cli::config::Config::default();
+    let toml_str = toml::to_string_pretty(&default_config).unwrap();
+    std::fs::write(&custom_path, toml_str).unwrap();
+
+    // Now loading with custom path should succeed
+    let config = load_or_create_config(Some(custom_path.clone())).unwrap();
+    assert_eq!(config.api_url, "https://api.cmdhub.io/v1");
+
+    // Verify it exists at the exact custom path
+    let expected_path = resolve_config_path(Some(custom_path.clone()));
+    assert_eq!(expected_path, custom_path);
+    assert!(expected_path.exists());
+}
+
+#[test]
+fn test_search_fallback_and_db() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_path_buf();
+
+    // Set XDG_DATA_HOME to temp dir
+    std::env::set_var("XDG_DATA_HOME", &data_dir);
+
+    let conn = open_db().unwrap();
+    init_db(&conn).unwrap();
+
+    // Insert dummy records for app and argument
+    conn.execute(
+        "INSERT INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
+        ("org.github.sl", "sl", "{\"brew\": \"brew install sl\"}"),
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            "sl.-l",
+            "org.github.sl",
+            "-l",
+            "arg",
+            "Display a train moving from left to right",
+            "safe",
+            "sl -l",
+        ),
+    ).unwrap();
+
+    // Insert into FTS5 virtual table
+    conn.execute(
+        "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?1, ?2, ?3)",
+        ("sl.-l", "sl", "Display a train moving from left to right"),
+    )
+    .unwrap();
+
+    // Search and verify fallback to pure FTS5 works
+    let results = search_commands(&conn, "train", None, 5).unwrap();
+    assert_eq!(results.len(), 1);
+
+    let command = &results[0];
+    assert_eq!(command.cmd_path, "sl.-l");
+    assert_eq!(command.app_id, "org.github.sl");
+    assert_eq!(command.name, "sl");
+    assert_eq!(command.risk_level, RiskLevel::Safe);
+    assert_eq!(command.example_template, Some("sl -l".to_string()));
+    assert_eq!(
+        command.install_instructions.as_ref().unwrap().brew,
+        Some("brew install sl".to_string())
+    );
+}
+
+#[test]
+fn test_safety_gating() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_path_buf();
+
+    // Set XDG_DATA_HOME to temp dir
+    std::env::set_var("XDG_DATA_HOME", &data_dir);
+    std::env::set_var("CMD_TEST", "1");
+
+    let conn = open_db().unwrap();
+    init_db(&conn).unwrap();
+
+    // Insert a dangerous command (we mock it as "echo" for child process testing)
+    conn.execute(
+        "INSERT INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
+        ("org.test.echo", "echo", None::<String>),
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            "echo.danger",
+            "org.test.echo",
+            "danger",
+            "arg",
+            "Dangerous echo",
+            "dangerous",
+            "echo danger",
+        ),
+    ).unwrap();
+
+    // Retrieve from DB
+    let cmd = get_command_by_path(&conn, "echo.danger").unwrap();
+    assert_eq!(cmd.risk_level, RiskLevel::Dangerous);
+
+    // Test bypass gate
+    let result = run_command(&conn, "echo.danger", &["hello".to_string()], true);
+    assert!(result.is_ok());
+
+    // Test dangerous blocked when skip_gating is false and stdin is not interactive (fails read_line)
+    let result = run_command(&conn, "echo.danger", &["hello".to_string()], false);
+    assert!(result.is_err());
+    let err_str = format!("{}", result.unwrap_err());
+    assert!(
+        err_str.contains("blocked")
+            || err_str.contains("read_line")
+            || err_str.contains("standard input")
+    );
+}
+
+#[test]
+fn test_signature_verification_and_zstd() {
+    // Generate deterministic key pair using [42; 32] seed
+    let seed = [42u8; 32];
+    let signing_key = SigningKey::from_bytes(&seed);
+    let verifying_key = signing_key.verifying_key();
+    let pub_key_bytes = verifying_key.to_bytes();
+
+    // Ensure the deterministic key matches the OFFICIAL_PUBLIC_KEY constant
+    assert_eq!(pub_key_bytes, OFFICIAL_PUBLIC_KEY);
+
+    // Dummy DB content
+    let db_payload = b"SQLite dummy content";
+
+    // Decompress/compress zstd
+    let compressed = zstd::encode_all(&db_payload[..], 3).unwrap();
+
+    // Compute SHA-256
+    let mut hasher = Sha256::new();
+    hasher.update(&compressed);
+    let hash_result: [u8; 32] = hasher.finalize().into();
+
+    // Sign using private key
+    let signature = signing_key.sign(&hash_result);
+    let sig_bytes = signature.to_bytes();
+
+    // Verify signature using pubkey
+    let verifying_key_dec = VerifyingKey::from_bytes(&pub_key_bytes).unwrap();
+    let sig_dec = Signature::from_slice(&sig_bytes).unwrap();
+    let verify_res = verifying_key_dec.verify(&hash_result, &sig_dec);
+    assert!(verify_res.is_ok());
+
+    // Decompress payload
+    let decompressed = zstd::decode_all(&compressed[..]).unwrap();
+    assert_eq!(decompressed, db_payload);
+}
+
+#[test]
+fn test_skills_integration() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let config_dir = tmp.path().to_path_buf();
+
+    // Set XDG_CONFIG_HOME and XDG_DATA_HOME to temp dirs
+    std::env::set_var("XDG_CONFIG_HOME", &config_dir);
+    std::env::set_var("XDG_DATA_HOME", &config_dir);
+
+    // Load db and init
+    let conn = open_db().unwrap();
+    init_db(&conn).unwrap();
+
+    // Create a mock skills JSON file inside skills_dir
+    let skills_dir = config_dir.join("cmdhub").join("skills");
+    std::fs::create_dir_all(&skills_dir).unwrap();
+
+    let contract_custom = cmdhub_shared::AciCommandContract {
+        app_id: "org.test.custom".to_string(),
+        name: "custom_cmd".to_string(),
+        cmd_path: "custom.run".to_string(),
+        node_type: cmdhub_shared::NodeType::Root,
+        description: "A completely custom command shortcut loaded from skills".to_string(),
+        risk_level: RiskLevel::Safe,
+        example_template: Some("custom_cmd --do-something".to_string()),
+        install_instructions: None,
+    };
+
+    let json_content = serde_json::to_string(&contract_custom).unwrap();
+    std::fs::write(skills_dir.join("custom.json"), json_content).unwrap();
+
+    // Search query using search_all and verify it successfully recalls the skill command!
+    let results = search_commands(&conn, "completely", None, 5).unwrap();
+    assert!(results.is_empty()); // Should be empty in pure DB search
+
+    let results_all = cmdhub_cli::db::search_all(&conn, "completely", None, 5).unwrap();
+    assert_eq!(results_all.len(), 1);
+    assert_eq!(results_all[0].name, "custom_cmd");
+    assert_eq!(results_all[0].cmd_path, "custom.run");
+}
+
+#[test]
+fn test_config_override_strict_validation() {
+    use assert_cmd::Command;
+    let mut cmd = Command::cargo_bin("cmdh").unwrap();
+    cmd.arg("--config")
+        .arg("non_existent_config_abc_123.toml")
+        .arg("search")
+        .arg("test");
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("does not exist"));
+}
