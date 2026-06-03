@@ -43,7 +43,7 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn preprocess_query(query: &str) -> String {
+fn preprocess_query(query: &str, use_and: bool) -> String {
     let stop_words: std::collections::HashSet<&str> = [
         "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by", "and",
         "or", "from", "my", "your", "our", "me", "us",
@@ -62,6 +62,8 @@ fn preprocess_query(query: &str) -> String {
 
     if words.is_empty() {
         "*".to_string()
+    } else if use_and {
+        words.join(" ")
     } else {
         words.join(" OR ")
     }
@@ -73,7 +75,23 @@ pub fn search_commands(
     query_vector: Option<&[f32]>,
     limit: usize,
 ) -> Result<Vec<AciCommandContract>> {
-    let processed_query = preprocess_query(query);
+    let and_query = preprocess_query(query, true);
+    let or_query = preprocess_query(query, false);
+
+    let mut and_match = false;
+    if and_query != "*" {
+        if let Ok(count) = conn.query_row::<u64, _, _>(
+            "SELECT count(*) FROM apps_fts WHERE apps_fts MATCH :query",
+            rusqlite::named_params! { ":query": &and_query },
+            |row| row.get(0),
+        ) {
+            if count > 0 {
+                and_match = true;
+            }
+        }
+    }
+
+    let processed_query = if and_match { and_query } else { or_query };
 
     // 1. Fast exact-match short-circuiting check (LOWER check for path/name)
     let trimmed_query = query.trim().to_lowercase();
@@ -160,9 +178,9 @@ pub fn search_commands(
                 LIMIT 100 \
             ), \
             vec_rank AS ( \
-                SELECT cmd_path, row_number() OVER (ORDER BY vec_distance_cosine(embedding, :query_vector) ASC) as vec_pos \
+                SELECT cmd_path, row_number() OVER (ORDER BY distance ASC) as vec_pos \
                 FROM commands_vec \
-                LIMIT 100 \
+                WHERE embedding MATCH :query_vector AND k = 100 \
             ) \
             SELECT \
                 arg.app_id, \
@@ -352,5 +370,94 @@ mod tests {
         let res = search_commands(&conn, "git", None, 10).unwrap();
         assert!(!res.is_empty());
         assert_eq!(res[0].cmd_path, "git");
+    }
+
+    #[test]
+    fn test_fts_fallback_and_or() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // Setup test apps and arguments
+        conn.execute(
+            "INSERT INTO apps (app_id, name, install_instructions) VALUES (?, ?, ?)",
+            ("org.test.rm", "rm", "{}"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("rm", "org.test.rm", "rm", "root", "delete local files", "safe", "rm"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?, ?, ?)",
+            ("rm", "rm", "delete local files"),
+        )
+        .unwrap();
+
+        // 1. Search that matches AND exactly: "delete local files"
+        let res = search_commands(&conn, "delete local files", None, 10).unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(res[0].cmd_path, "rm");
+
+        // 2. Search that matches AND with stop words: "delete my local files"
+        let res = search_commands(&conn, "delete my local files", None, 10).unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(res[0].cmd_path, "rm");
+
+        // 3. Search that has no complete AND matches: "delete missing files" (FTS AND query = "delete* AND missing* AND files*")
+        // It must fallback to OR and still match "rm" (matches delete, files)
+        let res = search_commands(&conn, "delete missing files", None, 10).unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(res[0].cmd_path, "rm");
+    }
+
+    #[test]
+    fn test_hybrid_search_knn_match() {
+        unsafe {
+            type SqliteVecInitFn = unsafe extern "C" fn();
+            let init_fn: SqliteVecInitFn = sqlite_vec::sqlite3_vec_init;
+            #[allow(clippy::missing_transmute_annotations)]
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(init_fn)));
+        }
+
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO apps (app_id, name, install_instructions) VALUES (?, ?, ?)",
+            ("org.test.knn", "knn", "{}"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("knn", "org.test.knn", "knn", "root", "vector search helper", "safe", "knn"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?, ?, ?)",
+            ("knn", "knn", "vector search helper"),
+        )
+        .unwrap();
+
+        // Insert vector
+        let v = vec![0.1f32; 512];
+        let mut v_bytes = Vec::with_capacity(512 * 4);
+        for &val in &v {
+            v_bytes.extend_from_slice(&val.to_ne_bytes());
+        }
+
+        conn.execute(
+            "INSERT INTO commands_vec (cmd_path, embedding) VALUES (?, ?)",
+            ("knn", v_bytes),
+        )
+        .unwrap();
+
+        // Search with query vector
+        let query_vec = vec![0.12f32; 512];
+        let res = search_commands(&conn, "missing_term", Some(&query_vec), 10).unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(res[0].cmd_path, "knn");
     }
 }

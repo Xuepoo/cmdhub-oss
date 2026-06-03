@@ -326,8 +326,9 @@ WITH fts_rank AS (
     FROM apps_fts WHERE apps_fts MATCH :query
 ),
 vec_rank AS (
-    SELECT cmd_path, row_number() OVER (ORDER BY vec_distance_cosine(embedding, :query_vector) ASC) as vec_pos
+    SELECT cmd_path, row_number() OVER (ORDER BY distance ASC) as vec_pos
     FROM commands_vec
+    WHERE embedding MATCH :query_vector AND k = 100
 )
 SELECT
     arg.cmd_path, arg.node_name, arg.description, arg.risk_level, arg.example_template,
