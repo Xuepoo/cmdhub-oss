@@ -162,8 +162,26 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
         fs::create_dir_all(parent).context("Failed to create live database directory")?;
     }
 
-    fs::rename(&staging_path, &live_db_path)
-        .context("Failed to atomically replace database file via rename")?;
+    // Use SQLite backup API to safely copy from staging to live database
+    eprintln!("Safely applying database changes...");
+    let src_conn =
+        rusqlite::Connection::open(&staging_path).context("Failed to open staging database")?;
+    let mut dst_conn =
+        rusqlite::Connection::open(&live_db_path).context("Failed to open live database")?;
+
+    // Enable WAL mode on target database
+    let _ = dst_conn.execute("PRAGMA journal_mode = WAL;", []);
+    let _ = dst_conn.execute("PRAGMA synchronous = NORMAL;", []);
+
+    let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)
+        .context("Failed to initialize SQLite backup")?;
+
+    backup
+        .run_to_completion(100, std::time::Duration::from_millis(10), None)
+        .context("SQLite backup to live database failed")?;
+
+    // Delete staging database file
+    let _ = fs::remove_file(&staging_path);
 
     eprintln!(
         "Database successfully updated to version {}!",

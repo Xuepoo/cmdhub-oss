@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A visual chunk-streaming progress bar outputting to STDERR during model downloads.
 - Verification checks for model integrity (SHA-256 hash validation) before finalizing installations.
 - Network-isolated container sandboxing for recursive CLI help extraction in `cmdh-extractor` using Podman/Docker.
+- Support for SQLite WAL (Write-Ahead Logging) mode and synchronous=NORMAL on all open database connections for concurrent reader-writer safety.
+- Safe hot database updates via SQLite Online Backup API (Backup) preventing file inode inconsistencies during updates.
 
 ### Changed
 - Replaced the hybrid search RRF vector ranking queries with the `sqlite-vec` recommended KNN MATCH syntax, improving large-dataset query performance.

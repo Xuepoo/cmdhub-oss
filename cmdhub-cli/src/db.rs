@@ -25,6 +25,8 @@ pub fn open_db() -> Result<Connection> {
     }
 
     let conn = Connection::open(&db_path).context("Failed to open SQLite database file")?;
+    let _ = conn.execute("PRAGMA journal_mode = WAL;", []);
+    let _ = conn.execute("PRAGMA synchronous = NORMAL;", []);
     Ok(conn)
 }
 
