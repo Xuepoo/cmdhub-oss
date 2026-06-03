@@ -113,15 +113,22 @@ pub async fn run() -> Result<()> {
 api_url = "https://api.cmdhub.xyz"
 
 [output]
-# Output formats: "full" (all fields), "usage" (cmd_path + example_template), "minimal" (cmd_path)
+# Set the format of the search results output to stdout.
+# Supported modes:
+#  - "full"   : Returns the full command contract including descriptions, risks, and install commands.
+#  - "usage"  : Returns a slim template format focusing purely on path and execution usage structure.
+#  - "minimal": Returns only the command pathway (e.g. [{{"cmd_path":"git"}}]).
 mode = "full"
 
 [install]
-# Detected OS: {detected}
-# You can override this manually by setting the os key below:
+# Host operating system override.
+# Detected on your platform as: "{detected}"
+# To override manually, uncomment the line below:
 # os = "{detected}"
 
-# Preferred order for developer package manager fallbacks
+# Priority sequence when searching for package manager installer instructions.
+# The resolver checks system installers first (matching your OS release),
+# then traverses these developer packages in order.
 package_managers = ["uv", "npm", "cargo", "go"]
 "#
         );

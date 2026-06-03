@@ -295,6 +295,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "fs2",
+ "libc",
  "predicates",
  "reqwest",
  "rusqlite",

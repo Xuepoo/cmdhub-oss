@@ -75,6 +75,50 @@ pub fn search_commands(
 ) -> Result<Vec<AciCommandContract>> {
     let processed_query = preprocess_query(query);
 
+    // 1. Fast exact-match short-circuiting check (LOWER check for path/name)
+    let trimmed_query = query.trim().to_lowercase();
+    let mut exact_stmt = conn.prepare(
+        "SELECT \
+            arg.app_id, \
+            app.name, \
+            arg.cmd_path, \
+            arg.node_type, \
+            arg.description, \
+            arg.risk_level, \
+            arg.example_template, \
+            app.install_instructions \
+        FROM arguments arg \
+        JOIN apps app ON arg.app_id = app.app_id \
+        WHERE LOWER(arg.cmd_path) = :query OR LOWER(app.name) = :query \
+        LIMIT :limit_num",
+    )?;
+
+    let exact_rows = exact_stmt.query_map(
+        rusqlite::named_params! {
+            ":query": trimmed_query,
+            ":limit_num": limit,
+        },
+        |row| {
+            Ok(DbAciRecord {
+                app_id: row.get(0)?,
+                name: row.get(1)?,
+                cmd_path: row.get(2)?,
+                node_type: row.get(3)?,
+                description: row.get(4)?,
+                risk_level: row.get(5)?,
+                example_template: row.get(6)?,
+                install_instructions: row.get(7)?,
+            })
+        },
+    )?;
+
+    let mut exact_results = Vec::new();
+    for record in exact_rows.flatten() {
+        if let Ok(contract) = AciCommandContract::try_from(record) {
+            exact_results.push(contract);
+        }
+    }
+
     // Check if commands_vec table exists and has any data
     let mut has_vector_db = false;
     if query_vector.is_some() {
@@ -159,7 +203,9 @@ pub fn search_commands(
                 results.push(contract);
             }
         }
-        Ok(results)
+        let mut final_results = exact_results.clone();
+        final_results.append(&mut results);
+        Ok(final_results)
     } else {
         // Fallback to pure FTS5 MATCH BM25 search
         let mut stmt = conn.prepare(
@@ -206,7 +252,9 @@ pub fn search_commands(
                 results.push(contract);
             }
         }
-        Ok(results)
+        let mut final_results = exact_results.clone();
+        final_results.append(&mut results);
+        Ok(final_results)
     }
 }
 
@@ -234,4 +282,57 @@ pub fn search_all(
     results.truncate(limit);
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exact_match_priority() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO apps (app_id, name, install_instructions) VALUES (?, ?, ?)",
+            ("org.test.git", "git", "{}"),
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("git", "org.test.git", "git", "root", "Git version control", "safe", "git"),
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?, ?, ?)",
+            ("git", "git", "Git version control"),
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO apps (app_id, name, install_instructions) VALUES (?, ?, ?)",
+            ("org.test.gitleaks", "gitleaks", "{}"),
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("gitleaks", "org.test.gitleaks", "gitleaks", "root", "Detect secrets in git", "safe", "gitleaks"),
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?, ?, ?)",
+            ("gitleaks", "gitleaks", "Detect secrets in git"),
+        )
+        .unwrap();
+
+        let res = search_commands(&conn, "git", None, 10).unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(res[0].cmd_path, "git");
+    }
 }
