@@ -203,10 +203,133 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
     Ok(())
 }
 
+static SANDBOX_ENGINE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+fn get_sandbox_engine() -> Option<&'static String> {
+    SANDBOX_ENGINE
+        .get_or_init(|| {
+            if std::env::var("CMDH_NO_SANDBOX").is_ok() {
+                eprintln!("[INFO] Sandbox explicitly disabled via CMDH_NO_SANDBOX");
+                return None;
+            }
+
+            // Try podman
+            let podman_check = std::process::Command::new("podman")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if let Ok(status) = podman_check {
+                if status.success() {
+                    eprintln!("[INFO] Sandbox engine detected: podman");
+                    return Some("podman".to_string());
+                }
+            }
+
+            // Try docker
+            let docker_check = std::process::Command::new("docker")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if let Ok(status) = docker_check {
+                if status.success() {
+                    eprintln!("[INFO] Sandbox engine detected: docker");
+                    return Some("docker".to_string());
+                }
+            }
+
+            eprintln!("[WARNING] No sandbox engine (podman/docker) found. Running in unsafe mode!");
+            None
+        })
+        .as_ref()
+}
+
+fn which(executable: &str) -> Option<std::path::PathBuf> {
+    if executable.contains('/') || executable.contains('\\') {
+        return std::path::Path::new(executable).canonicalize().ok();
+    }
+    if let Ok(paths) = std::env::var("PATH") {
+        for path in std::env::split_paths(&paths) {
+            let p = path.join(executable);
+            if p.exists() && p.is_file() {
+                if let Ok(canon) = p.canonicalize() {
+                    return Some(canon);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Spawns the CLI child process probe under a strict 5 second timeout and null stdin constraints.
 async fn run_probe(executable: &str, args: &[&str]) -> Result<String> {
-    let mut child = tokio::process::Command::new(executable)
-        .args(args)
+    let mut cmd = if let Some(engine) = get_sandbox_engine() {
+        let abs_path = which(executable).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Failed to resolve absolute path for executable: {}",
+                executable
+            )
+        })?;
+
+        let mut run_args = vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "--network".to_string(),
+            "none".to_string(),
+        ];
+
+        // Standard system dynamic link directories
+        let mut mounts = vec![
+            "/usr:/usr:ro".to_string(),
+            "/lib:/lib:ro".to_string(),
+            "/bin:/bin:ro".to_string(),
+        ];
+
+        if std::path::Path::new("/lib64").exists() {
+            mounts.push("/lib64:/lib64:ro".to_string());
+        }
+        if std::path::Path::new("/sbin").exists() {
+            mounts.push("/sbin:/sbin:ro".to_string());
+        }
+
+        // Mount the parent of the custom executable if not covered by standard mounts
+        if let Some(parent) = abs_path.parent() {
+            let parent_str = parent.to_string_lossy().to_string();
+            if !parent_str.starts_with("/usr")
+                && !parent_str.starts_with("/bin")
+                && !parent_str.starts_with("/lib")
+                && !parent_str.starts_with("/sbin")
+            {
+                mounts.push(format!("{}:{}:ro", parent_str, parent_str));
+            }
+        }
+
+        for m in mounts {
+            run_args.push("-v".to_string());
+            run_args.push(m);
+        }
+
+        // Target image (alpine:latest)
+        run_args.push("alpine:latest".to_string());
+
+        // Executable inside container (retains absolute host path since parent is mounted at same location)
+        run_args.push(abs_path.to_string_lossy().to_string());
+
+        for arg in args {
+            run_args.push(arg.to_string());
+        }
+
+        let mut child_cmd = tokio::process::Command::new(engine);
+        child_cmd.args(&run_args);
+        child_cmd
+    } else {
+        let mut child_cmd = tokio::process::Command::new(executable);
+        child_cmd.args(args);
+        child_cmd
+    };
+
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

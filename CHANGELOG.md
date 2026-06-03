@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dynamic download and automatic model management of the local ONNX embedding model to XDG Cache when vector search is triggered.
 - A visual chunk-streaming progress bar outputting to STDERR during model downloads.
 - Verification checks for model integrity (SHA-256 hash validation) before finalizing installations.
+- Network-isolated container sandboxing for recursive CLI help extraction in `cmdh-extractor` using Podman/Docker.
 
 ### Changed
 - Replaced the hybrid search RRF vector ranking queries with the `sqlite-vec` recommended KNN MATCH syntax, improving large-dataset query performance.
