@@ -14,7 +14,10 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
             arg.description, \
             arg.risk_level, \
             arg.example_template, \
-            app.install_instructions \
+            app.install_instructions, \
+            arg.docker_image, \
+            arg.script_url, \
+            arg.source_url \
         FROM arguments arg \
         JOIN apps app ON arg.app_id = app.app_id \
         WHERE arg.cmd_path = ?1",
@@ -31,6 +34,9 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
                 risk_level: row.get(5)?,
                 example_template: row.get(6)?,
                 install_instructions: row.get(7)?,
+                docker_image: row.get(8)?,
+                script_url: row.get(9)?,
+                source_url: row.get(10)?,
             })
         })
         .context("Command path not found in database")?;

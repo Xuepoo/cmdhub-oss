@@ -224,6 +224,9 @@ mod tests {
             risk_level: RiskLevel::Safe,
             example_template: Some("sl -l".to_string()),
             install_instructions: None,
+            docker_image: None,
+            script_url: None,
+            source_url: None,
         };
 
         let contract2 = AciCommandContract {
@@ -235,6 +238,9 @@ mod tests {
             risk_level: RiskLevel::Medium,
             example_template: Some("git commit -m \"message\"".to_string()),
             install_instructions: None,
+            docker_image: None,
+            script_url: None,
+            source_url: None,
         };
 
         let dummy_skill = DummySkill {
@@ -270,6 +276,9 @@ mod tests {
             risk_level: RiskLevel::Safe,
             example_template: Some("sl -l".to_string()),
             install_instructions: None,
+            docker_image: None,
+            script_url: None,
+            source_url: None,
         };
 
         let sl_json_path = temp_dir.join("sl.json");
@@ -285,6 +294,9 @@ mod tests {
             risk_level: RiskLevel::Medium,
             example_template: Some("git commit -m \"msg\"".to_string()),
             install_instructions: None,
+            docker_image: None,
+            script_url: None,
+            source_url: None,
         };
         let git_json_path = temp_dir.join("git.json");
         let git_json_content = serde_json::to_string(&vec![contract_git]).unwrap();
@@ -301,6 +313,9 @@ mod tests {
             risk_level: RiskLevel::Medium,
             example_template: Some("tar -cvf archive.tar files".to_string()),
             install_instructions: None,
+            docker_image: None,
+            script_url: None,
+            source_url: None,
         };
         let tar_json_path = sub_dir.join("tar.json");
         let tar_json_content = serde_json::to_string(&contract_tar).unwrap();

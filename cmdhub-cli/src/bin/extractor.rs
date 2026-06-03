@@ -180,6 +180,9 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
                 format!("{} {}", target.path, sub_path.join(" "))
             }),
             install_instructions: None,
+            docker_image: None,
+            script_url: None,
+            source_url: None,
         };
 
         // Insert database contract

@@ -86,7 +86,10 @@ pub fn search_commands(
             arg.description, \
             arg.risk_level, \
             arg.example_template, \
-            app.install_instructions \
+            app.install_instructions, \
+            arg.docker_image, \
+            arg.script_url, \
+            arg.source_url \
         FROM arguments arg \
         JOIN apps app ON arg.app_id = app.app_id \
         WHERE LOWER(arg.cmd_path) = :query OR LOWER(app.name) = :query \
@@ -108,6 +111,9 @@ pub fn search_commands(
                 risk_level: row.get(5)?,
                 example_template: row.get(6)?,
                 install_instructions: row.get(7)?,
+                docker_image: row.get(8)?,
+                script_url: row.get(9)?,
+                source_url: row.get(10)?,
             })
         },
     )?;
@@ -166,7 +172,10 @@ pub fn search_commands(
                 arg.description, \
                 arg.risk_level, \
                 arg.example_template, \
-                app.install_instructions \
+                app.install_instructions, \
+                arg.docker_image, \
+                arg.script_url, \
+                arg.source_url \
             FROM arguments arg \
             JOIN apps app ON arg.app_id = app.app_id \
             LEFT JOIN fts_rank fts ON arg.cmd_path = fts.cmd_path \
@@ -192,6 +201,9 @@ pub fn search_commands(
                     risk_level: row.get(5)?,
                     example_template: row.get(6)?,
                     install_instructions: row.get(7)?,
+                    docker_image: row.get(8)?,
+                    script_url: row.get(9)?,
+                    source_url: row.get(10)?,
                 })
             },
         )?;
@@ -217,7 +229,10 @@ pub fn search_commands(
                 arg.description, \
                 arg.risk_level, \
                 arg.example_template, \
-                app.install_instructions \
+                app.install_instructions, \
+                arg.docker_image, \
+                arg.script_url, \
+                arg.source_url \
             FROM arguments arg \
             JOIN apps app ON arg.app_id = app.app_id \
             JOIN apps_fts fts ON arg.cmd_path = fts.cmd_path \
@@ -241,6 +256,9 @@ pub fn search_commands(
                     risk_level: row.get(5)?,
                     example_template: row.get(6)?,
                     install_instructions: row.get(7)?,
+                    docker_image: row.get(8)?,
+                    script_url: row.get(9)?,
+                    source_url: row.get(10)?,
                 })
             },
         )?;

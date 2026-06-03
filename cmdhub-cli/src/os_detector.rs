@@ -4,6 +4,9 @@ pub fn detect_os() -> Option<String> {
     if std::env::consts::OS == "macos" {
         return Some("macos".to_string());
     }
+    if std::env::consts::OS == "windows" {
+        return Some("windows".to_string());
+    }
     parse_os_release(Path::new("/etc/os-release"))
 }
 
@@ -45,6 +48,7 @@ fn is_recognized_os(s: &str) -> bool {
     matches!(
         s,
         "macos"
+            | "windows"
             | "arch"
             | "ubuntu"
             | "debian"

@@ -24,6 +24,7 @@ path = "src/bin/extractor.rs"
 cmdhub-shared = { path = "../cmdhub-shared", version = "0.1.0-alpha" }
 cmdhub-skills = { path = "../cmdhub-skills", version = "0.1.0-alpha" }
 clap = { workspace = true }
+clap_complete = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

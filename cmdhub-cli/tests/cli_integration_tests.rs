@@ -259,6 +259,9 @@ fn test_skills_integration() {
         risk_level: RiskLevel::Safe,
         example_template: Some("custom_cmd --do-something".to_string()),
         install_instructions: None,
+        docker_image: None,
+        script_url: None,
+        source_url: None,
     };
 
     let json_content = serde_json::to_string(&contract_custom).unwrap();
@@ -368,4 +371,143 @@ fn test_init_command_safety_guards() {
 
     let val_overwritten = std::fs::read_to_string(&config_path).unwrap();
     assert!(val_overwritten.contains("CmdHub configuration file"));
+}
+
+#[test]
+fn test_completions_generation() {
+    use assert_cmd::Command;
+    let mut cmd = Command::cargo_bin("cmdh").unwrap();
+    cmd.arg("completions").arg("zsh");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("compdef") || stdout.contains("#defzsh"));
+}
+
+#[test]
+fn test_expanded_aci_fields_roundtrip() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_path_buf();
+    std::env::set_var("XDG_DATA_HOME", &data_dir);
+
+    let conn = open_db().unwrap();
+    init_db(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
+        (
+            "org.test.extended",
+            "ext",
+            "{\"brew\": \"brew install ext\", \"scoop\": \"scoop install ext\"}",
+        ),
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template, docker_image, script_url, source_url) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        (
+            "ext",
+            "org.test.extended",
+            "ext",
+            "root",
+            "extended commands",
+            "safe",
+            "ext --test",
+            Some("docker.io/test/ext:latest"),
+            Some("https://raw.githubusercontent.com/test/ext/main/install.sh"),
+            Some("https://github.com/test/ext"),
+        ),
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?1, ?2, ?3)",
+        ("ext", "ext", "extended commands"),
+    )
+    .unwrap();
+
+    drop(conn);
+
+    use assert_cmd::Command;
+    let mut cmd = Command::cargo_bin("cmdh").unwrap();
+    cmd.env("XDG_DATA_HOME", &data_dir)
+        .arg("search")
+        .arg("ext")
+        .arg("--full");
+
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("\"docker_image\":\"docker.io/test/ext:latest\""));
+    assert!(stdout
+        .contains("\"script_url\":\"https://raw.githubusercontent.com/test/ext/main/install.sh\""));
+    assert!(stdout.contains("\"source_url\":\"https://github.com/test/ext\""));
+}
+
+#[test]
+fn test_windows_scoop_install_suggestions() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_path_buf();
+    std::env::set_var("XDG_DATA_HOME", &data_dir);
+    std::env::set_var("XDG_CONFIG_HOME", &data_dir);
+
+    // Write a config overrides stating OS is windows
+    let config_path = data_dir.join("cmdhub/config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+    let mut config = cmdhub_cli::config::Config::default();
+    config.install.os = Some("windows".to_string());
+    config.install.package_managers = vec!["scoop".to_string(), "cargo".to_string()];
+    let toml_str = toml::to_string_pretty(&config).unwrap();
+    std::fs::write(&config_path, toml_str).unwrap();
+
+    let conn = open_db().unwrap();
+    init_db(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
+        (
+            "org.test.win",
+            "win",
+            "{\"scoop\": \"scoop install win\", \"brew\": \"brew install win\"}",
+        ),
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template, docker_image, script_url, source_url) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        (
+            "win",
+            "org.test.win",
+            "win",
+            "root",
+            "windows commands",
+            "safe",
+            "win --test",
+            None::<String>,
+            None::<String>,
+            None::<String>,
+        ),
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?1, ?2, ?3)",
+        ("win", "win", "windows commands"),
+    )
+    .unwrap();
+
+    drop(conn);
+
+    use assert_cmd::Command;
+    let mut cmd = Command::cargo_bin("cmdh").unwrap();
+    cmd.env("XDG_DATA_HOME", &data_dir)
+        .env("XDG_CONFIG_HOME", &data_dir)
+        .arg("search")
+        .arg("win")
+        .arg("--full");
+
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("\"install_command\":\"scoop install win\""));
 }

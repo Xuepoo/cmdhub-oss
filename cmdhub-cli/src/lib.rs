@@ -73,6 +73,12 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Generate shell autocompletion script to stdout
+    Completions {
+        /// Shell type (bash, zsh, fish)
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -216,6 +222,11 @@ package_managers = ["uv", "npm", "cargo", "go"]
                 installer::install_vector(&config, from_file, force).await?;
             }
         },
+        Commands::Completions { shell } => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "cmdh", &mut std::io::stdout());
+        }
         Commands::Init { .. } => unreachable!(),
     }
 

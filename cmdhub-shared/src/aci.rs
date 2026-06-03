@@ -40,6 +40,8 @@ pub struct InstallInstructions {
     pub pacman: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cargo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scoop: Option<String>,
 
     #[serde(flatten)]
     #[serde(default)]
@@ -53,6 +55,7 @@ impl InstallInstructions {
             "apt" => self.apt.as_ref(),
             "pacman" => self.pacman.as_ref(),
             "cargo" => self.cargo.as_ref(),
+            "scoop" => self.scoop.as_ref(),
             _ => self.others.get(key),
         }
     }
@@ -82,6 +85,15 @@ pub struct AciCommandContract {
     /// Cross-platform install commands
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_instructions: Option<InstallInstructions>,
+    /// Docker container image for isolated execution
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_image: Option<String>,
+    /// Direct URL to official install shell scripts
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script_url: Option<String>,
+    /// URL of the open-source code repository
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// Metadata about the local offline database.
@@ -132,6 +144,9 @@ pub struct DbArgument {
     pub description: String,
     pub risk_level: String,
     pub example_template: Option<String>,
+    pub docker_image: Option<String>,
+    pub script_url: Option<String>,
+    pub source_url: Option<String>,
 }
 
 /// Flattened database record representing the JOIN of `arguments` and `apps`.
@@ -148,6 +163,9 @@ pub struct DbAciRecord {
     pub risk_level: String,
     pub example_template: Option<String>,
     pub install_instructions: Option<String>,
+    pub docker_image: Option<String>,
+    pub script_url: Option<String>,
+    pub source_url: Option<String>,
 }
 
 impl AciCommandContract {
@@ -190,6 +208,9 @@ impl AciCommandContract {
             description: self.description.clone(),
             risk_level: risk_level_str.to_string(),
             example_template: self.example_template.clone(),
+            docker_image: self.docker_image.clone(),
+            script_url: self.script_url.clone(),
+            source_url: self.source_url.clone(),
         };
 
         Ok((app, argument))
@@ -248,6 +269,9 @@ impl TryFrom<DbAciRecord> for AciCommandContract {
             risk_level,
             example_template: record.example_template,
             install_instructions,
+            docker_image: record.docker_image,
+            script_url: record.script_url,
+            source_url: record.source_url,
         })
     }
 }
@@ -271,6 +295,9 @@ CREATE TABLE IF NOT EXISTS arguments (
     description TEXT NOT NULL,
     risk_level TEXT NOT NULL,
     example_template TEXT,
+    docker_image TEXT,
+    script_url TEXT,
+    source_url TEXT,
     FOREIGN KEY(app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 "#;
@@ -328,6 +355,9 @@ mod tests {
             risk_level: RiskLevel::Safe,
             example_template: Some("sl -l".to_string()),
             install_instructions: None,
+            docker_image: None,
+            script_url: None,
+            source_url: None,
         };
 
         let json = serde_json::to_string(&contract).unwrap();
@@ -361,8 +391,14 @@ mod tests {
                 apt: Some("sudo apt install sl".to_string()),
                 pacman: None,
                 cargo: None,
+                scoop: Some("scoop install sl".to_string()),
                 ..Default::default()
             }),
+            docker_image: Some("docker.io/library/sl:latest".to_string()),
+            script_url: Some(
+                "https://raw.githubusercontent.com/mtoyoda/sl/master/install.sh".to_string(),
+            ),
+            source_url: Some("https://github.com/mtoyoda/sl".to_string()),
         };
 
         // Test node_name extraction
@@ -384,6 +420,18 @@ mod tests {
         assert_eq!(db_arg.node_type, "arg");
         assert_eq!(db_arg.risk_level, "safe");
         assert_eq!(db_arg.example_template, Some("sl -l".to_string()));
+        assert_eq!(
+            db_arg.docker_image,
+            Some("docker.io/library/sl:latest".to_string())
+        );
+        assert_eq!(
+            db_arg.script_url,
+            Some("https://raw.githubusercontent.com/mtoyoda/sl/master/install.sh".to_string())
+        );
+        assert_eq!(
+            db_arg.source_url,
+            Some("https://github.com/mtoyoda/sl".to_string())
+        );
 
         // Test reconstruction from DbAciRecord
         let db_record = DbAciRecord {
@@ -395,6 +443,9 @@ mod tests {
             risk_level: db_arg.risk_level,
             example_template: db_arg.example_template,
             install_instructions: db_app.install_instructions,
+            docker_image: db_arg.docker_image,
+            script_url: db_arg.script_url,
+            source_url: db_arg.source_url,
         };
 
         let reconstructed = AciCommandContract::try_from(db_record).unwrap();
@@ -405,6 +456,22 @@ mod tests {
         assert_eq!(
             reconstructed.install_instructions.as_ref().unwrap().brew,
             Some("brew install sl".to_string())
+        );
+        assert_eq!(
+            reconstructed.install_instructions.as_ref().unwrap().scoop,
+            Some("scoop install sl".to_string())
+        );
+        assert_eq!(
+            reconstructed.docker_image,
+            Some("docker.io/library/sl:latest".to_string())
+        );
+        assert_eq!(
+            reconstructed.script_url,
+            Some("https://raw.githubusercontent.com/mtoyoda/sl/master/install.sh".to_string())
+        );
+        assert_eq!(
+            reconstructed.source_url,
+            Some("https://github.com/mtoyoda/sl".to_string())
         );
     }
 

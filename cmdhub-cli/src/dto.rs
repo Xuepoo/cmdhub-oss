@@ -24,6 +24,12 @@ pub struct FullDto {
     pub risk_level: String,
     pub example_template: Option<String>,
     pub install_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 pub fn resolve_install_command(contract: &AciCommandContract, config: &Config) -> Option<String> {
@@ -79,6 +85,7 @@ fn is_system_installer(installer: &str) -> bool {
 fn map_os_to_package_manager(os: &str) -> &str {
     match os {
         "macos" => "brew",
+        "windows" => "scoop",
         "arch" => "pacman",
         "ubuntu" | "debian" => "apt",
         "fedora" => "dnf",
@@ -130,6 +137,9 @@ pub fn format_results(
                         risk_level: format!("{:?}", c.risk_level).to_lowercase(),
                         example_template: c.example_template,
                         install_command,
+                        docker_image: c.docker_image,
+                        script_url: c.script_url,
+                        source_url: c.source_url,
                     }
                 })
                 .collect();
@@ -158,8 +168,12 @@ mod tests {
                 apt: Some("apt-get install test".to_string()),
                 pacman: None,
                 cargo: None,
+                scoop: Some("scoop install test".to_string()),
                 others: std::collections::HashMap::new(),
             }),
+            docker_image: None,
+            script_url: None,
+            source_url: None,
         };
 
         let mut config = Config::default();
