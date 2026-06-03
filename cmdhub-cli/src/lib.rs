@@ -108,9 +108,15 @@ pub async fn run() -> Result<()> {
         std::fs::create_dir_all(&config_dir)?;
 
         let detected = os_detector::detect_os().unwrap_or_else(|| "unknown".to_string());
+        let default_key: String = config::OFFICIAL_PUBLIC_KEY
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
         let config_content = format!(
             r#"# CmdHub configuration file
 api_url = "https://api.cmdhub.xyz"
+public_key = "{default_key}"
+timeout_seconds = 30
 
 [output]
 # Set the format of the search results output to stdout.
