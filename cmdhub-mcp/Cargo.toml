@@ -11,8 +11,8 @@ name = "cmdhub-mcp"
 path = "src/main.rs"
 
 [dependencies]
-cmdhub-shared = { path = "../cmdhub-shared" }
-cmdhub-cli = { path = "../cmdhub-cli" }
+cmdhub-shared = { path = "../cmdhub-shared", version = "0.1.0-alpha" }
+cmdhub-cli = { path = "../cmdhub-cli", version = "0.1.0-alpha" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
