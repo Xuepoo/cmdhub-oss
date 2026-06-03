@@ -7,12 +7,22 @@ repository.workspace = true
 description = "cmdh — the CmdHub CLI client for offline command search and execution"
 default-run = "cmdh"
 
+[lib]
+name = "cmdhub_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cmdh"
 path = "src/main.rs"
 
+[[bin]]
+name = "cmdh-extractor"
+path = "src/bin/extractor.rs"
+
+
 [dependencies]
 cmdhub-shared = { path = "../cmdhub-shared" }
+cmdhub-skills = { path = "../cmdhub-skills" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -21,11 +31,17 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 rusqlite = { workspace = true }
+sqlite-vec = { workspace = true }
 reqwest = { workspace = true }
 ed25519-dalek = { workspace = true }
 zstd = { workspace = true }
 directories = { workspace = true }
 fs2 = { workspace = true }
+toml = "0.8"
+sha2 = "0.10"
+tract-onnx = { workspace = true }
+flate2 = { workspace = true }
+
 
 [dev-dependencies]
 assert_cmd = "2"
