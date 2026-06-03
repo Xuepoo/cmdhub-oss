@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-06-04
+
+### Added
+- Dynamic download and automatic model management of the local ONNX embedding model to XDG Cache when vector search is triggered.
+- A visual chunk-streaming progress bar outputting to STDERR during model downloads.
+- Verification checks for model integrity (SHA-256 hash validation) before finalizing installations.
+
+### Changed
+- Replaced the hybrid search RRF vector ranking queries with the `sqlite-vec` recommended KNN MATCH syntax, improving large-dataset query performance.
+- Optimized FTS5 phrase search routing by prioritizing exact implicit AND queries before falling back to logical OR queries.
+- Refactored default embedding model path to comply with XDG Base Directory specification cache directories.
+- Converted Model Context Protocol (`cmdhub-mcp`) server main loop to support async runtime execution.
+
 ## [0.1.0-alpha.2] - 2026-06-04
 
 ### Added

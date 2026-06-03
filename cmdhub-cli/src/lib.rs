@@ -168,27 +168,23 @@ package_managers = ["uv", "npm", "cargo", "go"]
             usage_only,
             minimal,
         } => {
-            let default_path = config::get_data_dir().join("models/bge-micro-v2.onnx");
-            let model_path = config
-                .vector
-                .model_path
-                .as_ref()
-                .map(std::path::PathBuf::from)
-                .unwrap_or(default_path);
-
             let mut query_vector = None;
-            if model_path.exists() {
-                if let Ok(model) = inference::EmbeddingModel::load(&model_path) {
-                    let tokenizer = tokenizer::Tokenizer::new();
-                    let (ids, mask) = tokenizer.tokenize_query(&query);
-                    if let Ok(vec) = model.generate_embedding(&ids, &mask) {
-                        query_vector = Some(vec);
+            match installer::ensure_model_installed(&config).await {
+                Ok(model_path) => {
+                    if let Ok(model) = inference::EmbeddingModel::load(&model_path) {
+                        let tokenizer = tokenizer::Tokenizer::new();
+                        let (ids, mask) = tokenizer.tokenize_query(&query);
+                        if let Ok(vec) = model.generate_embedding(&ids, &mask) {
+                            query_vector = Some(vec);
+                        }
                     }
                 }
-            } else {
-                eprintln!(
-                    "Tip: Semantic search is inactive. Run 'cmdh install vector' to activate."
-                );
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Local semantic search is inactive ({}). Falling back to full-text search.",
+                        e
+                    );
+                }
             }
 
             let results = db::search_all(&conn, &query, query_vector.as_deref(), limit)?;

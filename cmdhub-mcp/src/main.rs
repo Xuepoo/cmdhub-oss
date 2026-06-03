@@ -59,7 +59,8 @@ struct AppState {
     config: cmdhub_cli::config::Config,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // 1. Initialize tracing to output strictly to STDERR
     tracing_subscriber::fmt()
         .with_writer(io::stderr)
@@ -73,16 +74,9 @@ fn main() -> Result<()> {
     tracing::info!("Starting CmdHub MCP server on stdio transport...");
 
     let config = cmdhub_cli::config::load_or_create_config(None).unwrap_or_default();
-    let default_path = cmdhub_cli::config::get_data_dir().join("models/bge-micro-v2.onnx");
-    let model_path = config
-        .vector
-        .model_path
-        .as_ref()
-        .map(std::path::PathBuf::from)
-        .unwrap_or(default_path);
 
-    let model = if model_path.exists() {
-        match cmdhub_cli::inference::EmbeddingModel::load(&model_path) {
+    let model = match cmdhub_cli::installer::ensure_model_installed(&config).await {
+        Ok(model_path) => match cmdhub_cli::inference::EmbeddingModel::load(&model_path) {
             Ok(m) => {
                 tracing::info!("Loaded embedding model from {:?}", model_path);
                 Some(std::sync::Arc::new(m))
@@ -91,10 +85,14 @@ fn main() -> Result<()> {
                 tracing::error!("Failed to load embedding model: {:?}", e);
                 None
             }
+        },
+        Err(e) => {
+            tracing::warn!(
+                "Failed to ensure embedding model: {}. Local semantic search is disabled.",
+                e
+            );
+            None
         }
-    } else {
-        tracing::info!("Embedding model file not found. Local semantic search is disabled.");
-        None
     };
 
     let tokenizer = cmdhub_cli::tokenizer::Tokenizer::new();

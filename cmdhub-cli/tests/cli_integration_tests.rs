@@ -511,3 +511,65 @@ fn test_windows_scoop_install_suggestions() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("\"install_command\":\"scoop install win\""));
 }
+
+#[tokio::test]
+async fn test_auto_model_download() {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let cache_dir = tmp.path().to_path_buf();
+
+    // Prepare mock data
+    let mock_data = b"mock onnx model content".to_vec();
+    let mut hasher = Sha256::new();
+    hasher.update(&mock_data);
+    let mock_sha256 = format!("{:x}", hasher.finalize());
+
+    // Start ephemeral mock server
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server_url = format!("http://127.0.0.1:{}", port);
+
+    let mock_data_clone = mock_data.clone();
+    let _server_thread = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0; 1024];
+            let _ = stream.read(&mut buffer);
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                mock_data_clone.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(&mock_data_clone);
+            let _ = stream.flush();
+        }
+    });
+
+    // Set configuration variables
+    let config_path = cache_dir.join("cmdhub/config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+    let temp_model_path = cache_dir.join("cmdhub/models/bge-micro-v2.onnx");
+
+    let mut config = cmdhub_cli::config::Config::default();
+    config.vector.model_url = Some(server_url);
+    config.vector.model_sha256 = Some(mock_sha256);
+    config.vector.model_path = Some(temp_model_path.to_string_lossy().to_string());
+
+    drop(_guard);
+
+    // Trigger ensure_model_installed
+    let path = cmdhub_cli::installer::ensure_model_installed(&config)
+        .await
+        .unwrap();
+    assert_eq!(path, temp_model_path);
+    assert!(temp_model_path.exists());
+
+    let downloaded_content = std::fs::read(&temp_model_path).unwrap();
+    assert_eq!(downloaded_content, mock_data);
+}
