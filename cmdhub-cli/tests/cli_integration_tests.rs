@@ -286,3 +286,17 @@ fn test_config_override_strict_validation() {
         .failure()
         .stderr(predicates::str::contains("does not exist"));
 }
+
+#[test]
+fn test_output_preset_formatting() {
+    use assert_cmd::Command;
+    let mut cmd = Command::cargo_bin("cmdh").unwrap();
+    cmd.arg("search")
+       .arg("git")
+       .arg("--usage-only");
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(output.contains("cmd_path"));
+    assert!(output.contains("example_template"));
+    assert!(!output.contains("risk_level"));
+}

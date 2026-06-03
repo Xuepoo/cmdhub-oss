@@ -7,6 +7,7 @@ pub mod inference;
 pub mod runner;
 pub mod installer;
 pub mod os_detector;
+pub mod dto;
 pub mod tokenizer;
 pub mod updater;
 
@@ -34,6 +35,15 @@ pub enum Commands {
         /// Maximum number of search results to return
         #[arg(long, default_value_t = 1)]
         limit: usize,
+        /// Force full preset output format
+        #[arg(short, long, group = "output_format")]
+        full: bool,
+        /// Force usage preset output format
+        #[arg(short, long, group = "output_format")]
+        usage_only: bool,
+        /// Force minimal preset output format
+        #[arg(short, long, group = "output_format")]
+        minimal: bool,
     },
     /// Sync the offline SQLite database from CDN
     Update {
@@ -84,7 +94,13 @@ pub async fn run() -> Result<()> {
     db::init_db(&conn)?;
 
     match cli.command {
-        Commands::Search { query, limit } => {
+        Commands::Search {
+            query,
+            limit,
+            full,
+            usage_only,
+            minimal,
+        } => {
             let default_path = config::get_data_dir().join("models/bge-micro-v2.onnx");
             let model_path = config
                 .vector
@@ -109,8 +125,20 @@ pub async fn run() -> Result<()> {
             }
 
             let results = db::search_all(&conn, &query, query_vector.as_deref(), limit)?;
+
+            let mode = if full {
+                "full"
+            } else if usage_only {
+                "usage"
+            } else if minimal {
+                "minimal"
+            } else {
+                &config.output.mode
+            };
+
+            let json_output = dto::format_results(results, mode, &config);
             // Output pure JSON data strictly to STDOUT so AI agents can pipe to jq
-            println!("{}", serde_json::to_string(&results)?);
+            println!("{}", serde_json::to_string(&json_output)?);
         }
         Commands::Update { force } => {
             updater::update_database(&config, force).await?;
