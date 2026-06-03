@@ -14,10 +14,10 @@ fn parse_os_release(path: &Path) -> Option<String> {
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("ID=") {
-            id = Some(strip_quotes(&trimmed[3..]));
-        } else if trimmed.starts_with("ID_LIKE=") {
-            id_like = Some(strip_quotes(&trimmed[8..]));
+        if let Some(val) = trimmed.strip_prefix("ID=") {
+            id = Some(strip_quotes(val));
+        } else if let Some(val) = trimmed.strip_prefix("ID_LIKE=") {
+            id_like = Some(strip_quotes(val));
         }
     }
 
@@ -69,14 +69,19 @@ mod tests {
         write!(
             tmp.as_file(),
             "NAME=\"Ubuntu\"\nID=\"ubuntu\"\nID_LIKE=\"debian\"\n"
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(parse_os_release(tmp.path()), Some("ubuntu".to_string()));
 
         let tmp_mint = tempfile::NamedTempFile::new().unwrap();
         write!(
             tmp_mint.as_file(),
             "NAME=\"Linux Mint\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"
-        ).unwrap();
-        assert_eq!(parse_os_release(tmp_mint.path()), Some("ubuntu".to_string()));
+        )
+        .unwrap();
+        assert_eq!(
+            parse_os_release(tmp_mint.path()),
+            Some("ubuntu".to_string())
+        );
     }
 }

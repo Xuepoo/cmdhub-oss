@@ -1,7 +1,7 @@
-use cmdhub_shared::AciCommandContract;
-use serde::Serialize;
 use crate::config::Config;
 use crate::os_detector::detect_os;
+use cmdhub_shared::AciCommandContract;
+use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct UsageDto {
@@ -32,7 +32,7 @@ pub fn resolve_install_command(contract: &AciCommandContract, config: &Config) -
     let os = config.install.os.clone().or_else(detect_os);
     let sys_installer = os.as_ref().map(|o| map_os_to_package_manager(o));
 
-    if let Some(ref installer) = sys_installer {
+    if let Some(installer) = sys_installer {
         if let Some(cmd) = instructions.get_command(installer) {
             return Some(cmd.clone());
         }

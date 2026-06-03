@@ -291,12 +291,40 @@ fn test_config_override_strict_validation() {
 fn test_output_preset_formatting() {
     use assert_cmd::Command;
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
-    cmd.arg("search")
-       .arg("git")
-       .arg("--usage-only");
+    cmd.arg("search").arg("git").arg("--usage-only");
     let assert = cmd.assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(output.contains("cmd_path"));
     assert!(output.contains("example_template"));
     assert!(!output.contains("risk_level"));
+}
+
+#[test]
+fn test_init_command_safety_guards() {
+    use assert_cmd::Command;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_path = tmp.path().join("cmdhub/config.toml");
+
+    // Seed file
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, "dummy").unwrap();
+
+    // Test guard warning exits gracefully (exit code 0)
+    let mut cmd = Command::cargo_bin("cmdh").unwrap();
+    cmd.env("XDG_CONFIG_HOME", tmp.path()).arg("init");
+    cmd.assert().success();
+
+    let val = std::fs::read_to_string(&config_path).unwrap();
+    assert_eq!(val, "dummy"); // Should not have changed
+
+    // Overwrite with force
+    let mut cmd_force = Command::cargo_bin("cmdh").unwrap();
+    cmd_force
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .arg("init")
+        .arg("--force");
+    cmd_force.assert().success();
+
+    let val_overwritten = std::fs::read_to_string(&config_path).unwrap();
+    assert!(val_overwritten.contains("CmdHub configuration file"));
 }

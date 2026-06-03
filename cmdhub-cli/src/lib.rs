@@ -3,11 +3,11 @@ use clap::{Parser, Subcommand};
 
 pub mod config;
 pub mod db;
+pub mod dto;
 pub mod inference;
-pub mod runner;
 pub mod installer;
 pub mod os_detector;
-pub mod dto;
+pub mod runner;
 pub mod tokenizer;
 pub mod updater;
 
@@ -67,6 +67,12 @@ pub enum Commands {
         #[command(subcommand)]
         sub: InstallAction,
     },
+    /// Initialize a new config.toml file with default systems properties
+    Init {
+        /// Overwrite config file if it already exists
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -85,6 +91,48 @@ pub enum InstallAction {
 pub async fn run() -> Result<()> {
     // 1. Parse command line arguments
     let cli = Cli::parse();
+
+    // Run setup initialization before loading configuration or opening DB
+    if let Commands::Init { force } = cli.command {
+        let config_dir = config::get_config_dir();
+        let config_path = config_dir.join("config.toml");
+
+        if config_path.exists() && !force {
+            eprintln!(
+                "Warning: Configuration file already exists at {:?}",
+                config_path
+            );
+            return Ok(());
+        }
+
+        std::fs::create_dir_all(&config_dir)?;
+
+        let detected = os_detector::detect_os().unwrap_or_else(|| "unknown".to_string());
+        let config_content = format!(
+            r#"# CmdHub configuration file
+api_url = "https://api.cmdhub.xyz"
+
+[output]
+# Output formats: "full" (all fields), "usage" (cmd_path + example_template), "minimal" (cmd_path)
+mode = "full"
+
+[install]
+# Detected OS: {detected}
+# You can override this manually by setting the os key below:
+# os = "{detected}"
+
+# Preferred order for developer package manager fallbacks
+package_managers = ["uv", "npm", "cargo", "go"]
+"#
+        );
+
+        std::fs::write(&config_path, config_content)?;
+        println!(
+            "Configuration initialized successfully at {:?}",
+            config_path
+        );
+        return Ok(());
+    }
 
     // 2. Load config with CLI override path
     let config = config::load_or_create_config(cli.config.clone())?;
@@ -155,6 +203,7 @@ pub async fn run() -> Result<()> {
                 installer::install_vector(&config, from_file, force).await?;
             }
         },
+        Commands::Init { .. } => unreachable!(),
     }
 
     Ok(())
