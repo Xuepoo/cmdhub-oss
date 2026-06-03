@@ -39,7 +39,10 @@ zstd = { workspace = true }
 directories = { workspace = true }
 fs2 = { workspace = true }
 toml = "0.8"
+uuid = { workspace = true }
+chrono = { workspace = true }
 sha2 = "0.10"
+base64 = "0.22"
 tract-onnx = { workspace = true }
 flate2 = { workspace = true }
 libc = "0.2"

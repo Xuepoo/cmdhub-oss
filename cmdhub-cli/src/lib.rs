@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+pub mod auth;
 pub mod config;
 pub mod db;
 pub mod dto;
@@ -79,6 +80,10 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Log in to CmdHub Cloud Registry via GitHub PKCE OAuth2
+    Login,
+    /// Log out of CmdHub Cloud and clear local credentials
+    Logout,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -222,6 +227,12 @@ package_managers = ["uv", "npm", "cargo", "go"]
             use clap::CommandFactory;
             let mut cmd = Cli::command();
             clap_complete::generate(shell, &mut cmd, "cmdh", &mut std::io::stdout());
+        }
+        Commands::Login => {
+            auth::login_flow(&config).await?;
+        }
+        Commands::Logout => {
+            auth::logout_flow(&config).await?;
         }
         Commands::Init { .. } => unreachable!(),
     }
