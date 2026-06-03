@@ -297,6 +297,8 @@ version = "0.1.0-alpha"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "base64",
+ "chrono",
  "clap",
  "clap_complete",
  "cmdhub-shared",
@@ -319,6 +321,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tract-onnx",
+ "uuid",
  "zstd",
 ]
 
