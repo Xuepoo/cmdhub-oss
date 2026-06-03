@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] - 2026-06-04
+
+### Added
+- Automated integration test suite (`tests/mcp_integration_tests.rs`) for `cmdhub-mcp` daemon verifying JSON-RPC stdio protocol parsing and `STDOUT` redirection isolation.
+- Platform compilation verification script (`tmp/verify_platforms.sh`) for host-native targets.
+
 ## [0.1.0-alpha.3] - 2026-06-04
 
 ### Added
