@@ -327,11 +327,13 @@ name = "cmdhub-mcp"
 version = "0.1.0-alpha"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "clap",
  "cmdhub-cli",
  "cmdhub-shared",
  "directories",
  "libc",
+ "predicates",
  "rusqlite",
  "serde",
  "serde_json",
