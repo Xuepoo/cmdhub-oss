@@ -15,6 +15,7 @@ permissions:
 
 env:
   PROJECT_NAME: cmdh
+  CFLAGS: "-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int32_t=uint32_t -Du_int64_t=uint64_t"
 
 jobs:
   build:

@@ -32,5 +32,8 @@ schemas/*.test.json
 # Internal dev docs (not for public repo)
 AGENTS.md
 CLAUDE.md
+.hermes
+.gemini
+.agents
 .cursorrules
 tmp
