@@ -1,5 +1,7 @@
 # CmdHub: Agent-Computer Utility Command Hub
 
+> English | [简体中文](./README.zh-CN.md)
+
 > A decentralized, intent-driven CLI command registry and offline search infrastructure built for AI Agents and modern developers.
 
 ## What is CmdHub?

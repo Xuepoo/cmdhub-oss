@@ -1,0 +1,16 @@
+# nFPM configuration file for generating deb, rpm and archlinux packages
+name: "cmdh"
+arch: "${ARCH}"
+platform: "linux"
+version: "${VERSION}"
+release: "1"
+section: "utils"
+priority: "optional"
+maintainer: "CmdHub Contributors"
+description: "Decentralized registry and offline search tool for AI Agents"
+homepage: "https://github.com/Xuepoo/cmdhub-oss"
+license: "MIT"
+
+contents:
+  - src: ./cmdh
+    dst: /usr/bin/cmdh

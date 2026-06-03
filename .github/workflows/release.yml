@@ -33,9 +33,13 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
+            artifact_name: cmdh-linux-x86_64
+            pack_linux: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
+            artifact_name: cmdh-linux-aarch64
+            pack_linux: true
           - target: x86_64-apple-darwin
             os: macos-latest
             cross: false
@@ -79,6 +83,47 @@ jobs:
           sha256sum ${PROJECT_NAME}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
             > ${PROJECT_NAME}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
 
+      - name: Rename release binary
+        if: matrix.artifact_name
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/cmdh ${{ matrix.artifact_name }}
+          chmod +x ${{ matrix.artifact_name }}
+
+      - name: Package for Linux distributions
+        if: matrix.pack_linux
+        shell: bash
+        run: |
+          RUNNER_ARCH=$(uname -m)
+          if [ "$RUNNER_ARCH" = "aarch64" ]; then
+            NFPM_ARCH="arm64"
+          else
+            NFPM_ARCH="x86_64"
+          fi
+
+          if [[ "${{ matrix.target }}" == aarch64* ]]; then
+            export ARCH="arm64"
+            PKG_ARCH="aarch64"
+          else
+            export ARCH="amd64"
+            PKG_ARCH="x86_64"
+          fi
+
+          curl -sL https://github.com/goreleaser/nfpm/releases/download/v2.37.1/nfpm_2.37.1_Linux_${NFPM_ARCH}.tar.gz | tar xz nfpm
+
+          cp target/${{ matrix.target }}/release/cmdh ./cmdh
+          chmod +x ./cmdh
+
+          VERSION=${GITHUB_REF_NAME#v}
+          if [ -z "$VERSION" ]; then
+            VERSION="0.1.0"
+          fi
+          export VERSION
+
+          ./nfpm pkg --config packaging/nfpm.yaml --packager deb --target cmdh-linux-${PKG_ARCH}.deb
+          ./nfpm pkg --config packaging/nfpm.yaml --packager rpm --target cmdh-linux-${PKG_ARCH}.rpm
+          ./nfpm pkg --config packaging/nfpm.yaml --packager archlinux --target cmdh-linux-${PKG_ARCH}.pkg.tar.zst
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -86,7 +131,11 @@ jobs:
           path: |
             ${{ env.PROJECT_NAME }}-*.tar.gz
             ${{ env.PROJECT_NAME }}-*.sha256
-          if-no-files-found: error
+            cmdh-linux-*
+            *.deb
+            *.rpm
+            *.pkg.tar.zst
+          if-no-files-found: warn
 
   release:
     name: GitHub Release

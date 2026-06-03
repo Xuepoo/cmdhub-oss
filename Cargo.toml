@@ -61,3 +61,10 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # UUID
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = "z"        # Optimize for size
+lto = true             # Enable Link-Time Optimization (LTO)
+codegen-units = 1      # Maximize compiler optimization passes
+panic = "abort"        # Disable unwinding to shrink binary size
+strip = true           # Strip all debug symbols and sections
