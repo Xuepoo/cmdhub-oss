@@ -33,3 +33,4 @@ schemas/*.test.json
 AGENTS.md
 CLAUDE.md
 .cursorrules
+tmp

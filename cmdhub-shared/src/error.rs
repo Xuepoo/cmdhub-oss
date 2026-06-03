@@ -25,4 +25,7 @@ pub enum CmdHubError {
 
     #[error("Execution blocked by safety guardrail: risk_level={risk_level}, command={command}")]
     ExecutionBlocked { risk_level: String, command: String },
+
+    #[error("Validation error: {0}")]
+    Validation(String),
 }

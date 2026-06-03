@@ -48,28 +48,28 @@ impl EmbeddingModel {
         if shape.len() == 3 {
             let seq_len = shape[1];
             let dim = shape[2];
-            assert_eq!(dim, 512, "Embedding dimension must be 512");
+            let target_dim = std::cmp::min(dim, 512);
 
             let mut valid_token_count = 0.0f32;
             for (t, &m) in mask.iter().enumerate() {
                 if t < seq_len && m > 0 {
                     let weight = m as f32;
                     valid_token_count += weight;
-                    for d in 0..dim {
+                    for d in 0..target_dim {
                         raw_vec[d] += output_tensor[[0, t, d]] * weight;
                     }
                 }
             }
 
             if valid_token_count > 0.0 {
-                for val in &mut raw_vec {
+                for val in raw_vec.iter_mut().take(target_dim) {
                     *val /= valid_token_count;
                 }
             }
         } else if shape.len() == 2 {
             let dim = shape[1];
-            assert_eq!(dim, 512, "Embedding dimension must be 512");
-            for d in 0..dim {
+            let target_dim = std::cmp::min(dim, 512);
+            for d in 0..target_dim {
                 raw_vec[d] = output_tensor[[0, d]];
             }
         } else {

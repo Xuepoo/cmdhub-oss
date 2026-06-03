@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 pub mod config;
 pub mod db;
 pub mod inference;
+pub mod installer;
 pub mod runner;
 pub mod tokenizer;
 pub mod updater;
@@ -50,6 +51,24 @@ pub enum Commands {
         #[arg(short, long)]
         yes: bool,
     },
+    /// Install assets or models
+    Install {
+        #[command(subcommand)]
+        sub: InstallAction,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum InstallAction {
+    /// Install BGE vector model for local semantic search
+    Vector {
+        /// Install from local file instead of downloading
+        #[arg(long, value_name = "FILE")]
+        from_file: Option<std::path::PathBuf>,
+        /// Force install/reinstall even if SHA-256 matches
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -65,7 +84,30 @@ pub async fn run() -> Result<()> {
 
     match cli.command {
         Commands::Search { query, limit } => {
-            let results = db::search_all(&conn, &query, None, limit)?;
+            let default_path = config::get_data_dir().join("models/bge-micro-v2.onnx");
+            let model_path = config
+                .vector
+                .model_path
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or(default_path);
+
+            let mut query_vector = None;
+            if model_path.exists() {
+                if let Ok(model) = inference::EmbeddingModel::load(&model_path) {
+                    let tokenizer = tokenizer::Tokenizer::new();
+                    let (ids, mask) = tokenizer.tokenize_query(&query);
+                    if let Ok(vec) = model.generate_embedding(&ids, &mask) {
+                        query_vector = Some(vec);
+                    }
+                }
+            } else {
+                eprintln!(
+                    "Tip: Semantic search is inactive. Run 'cmdh install vector' to activate."
+                );
+            }
+
+            let results = db::search_all(&conn, &query, query_vector.as_deref(), limit)?;
             // Output pure JSON data strictly to STDOUT so AI agents can pipe to jq
             println!("{}", serde_json::to_string(&results)?);
         }
@@ -79,6 +121,11 @@ pub async fn run() -> Result<()> {
         } => {
             runner::run_command(&conn, &cmd_path, &args, yes)?;
         }
+        Commands::Install { sub } => match sub {
+            InstallAction::Vector { from_file, force } => {
+                installer::install_vector(&config, from_file, force).await?;
+            }
+        },
     }
 
     Ok(())
