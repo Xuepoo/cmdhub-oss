@@ -289,9 +289,50 @@ fn test_config_override_strict_validation() {
 
 #[test]
 fn test_output_preset_formatting() {
+    let _guard = ENV_MUTEX.lock().unwrap();
     use assert_cmd::Command;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_path_buf();
+
+    // Set XDG_DATA_HOME to temp dir
+    std::env::set_var("XDG_DATA_HOME", &data_dir);
+
+    let conn = open_db().unwrap();
+    init_db(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
+        ("org.github.git", "git", "{\"brew\": \"brew install git\"}"),
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            "git",
+            "org.github.git",
+            "git",
+            "root",
+            "git version control",
+            "safe",
+            "example_template",
+        ),
+    ).unwrap();
+
+    conn.execute(
+        "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?1, ?2, ?3)",
+        ("git", "git", "git version control"),
+    )
+    .unwrap();
+
+    drop(conn);
+
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
-    cmd.arg("search").arg("git").arg("--usage-only");
+    cmd.env("XDG_DATA_HOME", &data_dir)
+        .arg("search")
+        .arg("git")
+        .arg("--usage-only");
     let assert = cmd.assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(output.contains("cmd_path"));
