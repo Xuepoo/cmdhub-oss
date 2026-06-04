@@ -124,6 +124,27 @@ pub struct UpdateManifest {
     pub sig_url: String,
     /// SHA-256 checksum of the .zst file
     pub sha256: String,
+    /// Sync mode: "full", "incremental", "noop"
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Server sync timestamp
+    #[serde(default)]
+    pub new_sync_time: Option<i64>,
+}
+
+/// Database record representing a single embedding vector in `commands_vec`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbCommandVec {
+    pub cmd_path: String,
+    pub embedding: Vec<f32>,
+}
+
+/// Payload package containing delta updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncrementalSyncPayload {
+    pub apps: Vec<DbApp>,
+    pub arguments: Vec<DbArgument>,
+    pub command_vecs: Vec<DbCommandVec>,
 }
 
 /// Database record representing the `apps` table row.

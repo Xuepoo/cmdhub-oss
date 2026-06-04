@@ -42,6 +42,16 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     if let Err(e) = conn.execute(CREATE_COMMANDS_VEC_TABLE, []) {
         eprintln!("Warning: Failed to initialize sqlite-vec commands_vec table: {}. Falling back to FTS5 search.", e);
     }
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sync_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+        [],
+    )
+    .context("Failed to create sync_meta table")?;
+
     Ok(())
 }
 
