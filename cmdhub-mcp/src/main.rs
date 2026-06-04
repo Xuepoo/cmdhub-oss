@@ -373,7 +373,7 @@ fn handle_tool_call(
             let args = execute_args.args.unwrap_or_default();
 
             // Run command securely redirection-wrapped
-            match run_command_safely(&conn, &execute_args.cmd_path, &args) {
+            match run_command_safely(&state.config, &conn, &execute_args.cmd_path, &args) {
                 Ok(_) => Ok(serde_json::json!({
                     "content": [
                         {
@@ -399,7 +399,12 @@ fn handle_tool_call(
 
 /// Executes a CLI command securely, routing its standard output to standard error to prevent JSON-RPC pollution.
 #[cfg(unix)]
-fn run_command_safely(conn: &rusqlite::Connection, cmd_path: &str, args: &[String]) -> Result<()> {
+fn run_command_safely(
+    config: &cmdhub_cli::config::Config,
+    conn: &rusqlite::Connection,
+    cmd_path: &str,
+    args: &[String],
+) -> Result<()> {
     use std::os::unix::io::AsRawFd;
 
     // 1. Flush stdout to avoid lingering buffered bytes being sent down the wrong stream
@@ -431,7 +436,7 @@ fn run_command_safely(conn: &rusqlite::Connection, cmd_path: &str, args: &[Strin
     }
 
     // 4. Run the requested CLI command
-    let result = cmdhub_cli::runner::run_command(conn, cmd_path, args, true);
+    let result = cmdhub_cli::runner::run_command(config, conn, cmd_path, args, true);
 
     // 5. Restore original stdout fd
     let restore_res = unsafe { libc::dup2(saved_stdout, stdout_fd) };
@@ -764,8 +769,13 @@ mod tests {
         // When we run echo.test through run_command_safely, standard output from echo is redirected to stderr.
         // Thus, capturing stdout should yield absolutely nothing, while executing correctly!
         let output = capture_stdout(|| {
-            let res =
-                run_command_safely(&conn, "echo.test", &["hello_mcp_redirection".to_string()]);
+            let config = cmdhub_cli::config::Config::default();
+            let res = run_command_safely(
+                &config,
+                &conn,
+                "echo.test",
+                &["hello_mcp_redirection".to_string()],
+            );
             assert!(res.is_ok());
         });
 

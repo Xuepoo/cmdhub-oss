@@ -245,6 +245,12 @@ fn get_sandbox_engine() -> Option<&'static String> {
         .as_ref()
 }
 
+static RUNSC_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn is_runsc_available() -> bool {
+    *RUNSC_AVAILABLE.get_or_init(|| which("runsc").is_some())
+}
+
 fn which(executable: &str) -> Option<std::path::PathBuf> {
     if executable.contains('/') || executable.contains('\\') {
         return std::path::Path::new(executable).canonicalize().ok();
@@ -272,12 +278,15 @@ async fn run_probe(executable: &str, args: &[&str]) -> Result<String> {
             )
         })?;
 
-        let mut run_args = vec![
-            "run".to_string(),
-            "--rm".to_string(),
-            "--network".to_string(),
-            "none".to_string(),
-        ];
+        let mut run_args = vec!["run".to_string(), "--rm".to_string()];
+
+        if is_runsc_available() {
+            run_args.push("--runtime".to_string());
+            run_args.push("runsc".to_string());
+        }
+
+        run_args.push("--network".to_string());
+        run_args.push("none".to_string());
 
         // Standard system dynamic link directories
         let mut mounts = vec![

@@ -1,5 +1,5 @@
 use cmdhub_cli::config::OFFICIAL_PUBLIC_KEY;
-use cmdhub_cli::config::{load_or_create_config, resolve_config_path};
+use cmdhub_cli::config::{load_or_create_config, resolve_config_path, Config};
 use cmdhub_cli::db::{init_db, open_db, search_commands};
 use cmdhub_cli::runner::{get_command_by_path, run_command};
 use cmdhub_shared::RiskLevel;
@@ -180,12 +180,14 @@ fn test_safety_gating() {
     let cmd = get_command_by_path(&conn, "echo.danger").unwrap();
     assert_eq!(cmd.risk_level, RiskLevel::Dangerous);
 
+    let config = Config::default();
+
     // Test bypass gate
-    let result = run_command(&conn, "echo.danger", &["hello".to_string()], true);
+    let result = run_command(&config, &conn, "echo.danger", &["hello".to_string()], true);
     assert!(result.is_ok());
 
     // Test dangerous blocked when skip_gating is false and stdin is not interactive (fails read_line)
-    let result = run_command(&conn, "echo.danger", &["hello".to_string()], false);
+    let result = run_command(&config, &conn, "echo.danger", &["hello".to_string()], false);
     assert!(result.is_err());
     let err_str = format!("{}", result.unwrap_err());
     assert!(
@@ -193,6 +195,84 @@ fn test_safety_gating() {
             || err_str.contains("read_line")
             || err_str.contains("standard input")
     );
+}
+
+#[test]
+fn test_run_command_risk_gating_dangerous_blocked_by_config() {
+    let tmp = TempDir::new().unwrap();
+    let conn_path = tmp.path().join("test.db");
+    let conn = rusqlite::Connection::open(&conn_path).unwrap();
+    init_db(&conn).unwrap();
+
+    // Insert a dangerous command ACI
+    conn.execute(
+        "INSERT OR REPLACE INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
+        ("org.test.echo", "echo", None::<String>),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            "echo.danger",
+            "org.test.echo",
+            "danger",
+            "arg",
+            "Dangerous echo",
+            "dangerous",
+            "echo danger",
+        ),
+    ).unwrap();
+
+    // Set config risk_guard_level to "block"
+    let config = Config {
+        risk_guard_level: "block".to_string(),
+        ..Config::default()
+    };
+
+    // Must be blocked immediately even if we try to run it
+    let result = run_command(&config, &conn, "echo.danger", &["hello".to_string()], false);
+    assert!(result.is_err());
+    let err_str = format!("{}", result.unwrap_err());
+    assert!(err_str.contains("blocked"));
+}
+
+#[test]
+fn test_run_command_risk_gating_dangerous_allowed_by_config() {
+    let tmp = TempDir::new().unwrap();
+    let conn_path = tmp.path().join("test.db");
+    let conn = rusqlite::Connection::open(&conn_path).unwrap();
+    init_db(&conn).unwrap();
+
+    // Insert a dangerous command ACI
+    conn.execute(
+        "INSERT OR REPLACE INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
+        ("org.test.echo", "echo", None::<String>),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            "echo.danger",
+            "org.test.echo",
+            "danger",
+            "arg",
+            "Dangerous echo",
+            "dangerous",
+            "echo danger",
+        ),
+    ).unwrap();
+
+    // Set config risk_guard_level to "allow"
+    let config = Config {
+        risk_guard_level: "allow".to_string(),
+        ..Config::default()
+    };
+
+    // Must execute successfully because it's allowed
+    let result = run_command(&config, &conn, "echo.danger", &["hello".to_string()], false);
+    assert!(result.is_ok());
 }
 
 #[test]

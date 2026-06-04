@@ -15,6 +15,8 @@ pub struct Config {
     pub api_url: String,
     pub public_key: String,
     pub timeout_seconds: u64,
+    #[serde(default = "default_risk_guard_level")]
+    pub risk_guard_level: String,
     #[serde(default)]
     pub vector: VectorConfig,
     #[serde(default)]
@@ -37,6 +39,7 @@ impl Default for Config {
                 .map(|b| format!("{:02x}", b))
                 .collect(),
             timeout_seconds: 30,
+            risk_guard_level: default_risk_guard_level(),
             vector: VectorConfig::default(),
             output: OutputConfig::default(),
             install: InstallConfig::default(),
@@ -139,6 +142,10 @@ fn default_output_mode() -> String {
     "full".to_string()
 }
 
+fn default_risk_guard_level() -> String {
+    "ask".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InstallConfig {
     pub os: Option<String>,
@@ -176,6 +183,7 @@ mod tests {
             timeout_seconds = 30
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.risk_guard_level, "ask");
         assert_eq!(config.output.mode, "full");
         assert_eq!(config.install.os, None);
         assert_eq!(
