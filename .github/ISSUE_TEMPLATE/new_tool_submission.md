@@ -2,8 +2,9 @@
 name: New Tool Submission
 about: Submit a CLI tool for CmdHub registry indexing
 title: "[TOOL] "
-labels: tool-submission
+labels: ''
 assignees: ''
+
 ---
 
 ## Repository URL
