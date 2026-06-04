@@ -145,7 +145,7 @@ jobs:
           ./nfpm pkg --config packaging/nfpm.yaml --packager archlinux --target cmdh-linux-${PKG_ARCH}.pkg.tar.zst
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.target }}
           path: |
@@ -215,11 +215,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Linux artifact checksum
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: build-x86_64-unknown-linux-musl
           path: artifacts
+          pattern: build-*
+          merge-multiple: true
+
+      - name: Update PKGBUILD package version and checksums
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA_X86=$(sha256sum "artifacts/cmdh-linux-x86_64" | awk '{print $1}')
+          SHA_ARM=$(sha256sum "artifacts/cmdh-linux-aarch64" | awk '{print $1}')
+
+          sed -i "s/pkgver=.*/pkgver=${VERSION}/" ./packaging/aur/PKGBUILD
+          sed -i "s/sha256sums_x86_64=.*/sha256sums_x86_64=('${SHA_X86}')/" ./packaging/aur/PKGBUILD
+          sed -i "s/sha256sums_aarch64=.*/sha256sums_aarch64=('${SHA_ARM}')/" ./packaging/aur/PKGBUILD
 
       - name: Publish cmdh-bin to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3

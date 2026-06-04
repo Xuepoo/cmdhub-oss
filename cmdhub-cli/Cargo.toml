@@ -21,8 +21,8 @@ path = "src/bin/extractor.rs"
 
 
 [dependencies]
-cmdhub-shared = { path = "../cmdhub-shared", version = "0.1.0-alpha" }
-cmdhub-skills = { path = "../cmdhub-skills", version = "0.1.0-alpha" }
+cmdhub-shared = { path = "../cmdhub-shared", version = "0.1.0" }
+cmdhub-skills = { path = "../cmdhub-skills", version = "0.1.0" }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 serde = { workspace = true }
