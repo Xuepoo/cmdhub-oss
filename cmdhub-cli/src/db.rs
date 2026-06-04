@@ -65,7 +65,7 @@ fn preprocess_query(query: &str, use_and: bool) -> String {
     .collect();
 
     let words: Vec<String> = query
-        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| !w.is_empty())
         .map(|w| w.to_lowercase())
         .filter(|w| !stop_words.contains(w.as_str()))
