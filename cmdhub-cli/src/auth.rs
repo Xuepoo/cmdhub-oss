@@ -203,14 +203,17 @@ pub async fn logout_flow(config: &Config) -> Result<()> {
 }
 
 fn open_browser(url: &str) -> bool {
+    if std::env::var("CMDHub_HEADLESS").is_ok() || std::env::var("CI").is_ok() {
+        return false;
+    }
     #[cfg(target_os = "macos")]
-    let status = std::process::Command::new("open").arg(url).status();
+    let res = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
-    let status = std::process::Command::new("cmd")
+    let res = std::process::Command::new("cmd")
         .args(["/C", "start", "", url])
-        .status();
+        .spawn();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let status = std::process::Command::new("xdg-open").arg(url).status();
+    let res = std::process::Command::new("xdg-open").arg(url).spawn();
 
-    status.map(|s| s.success()).unwrap_or(false)
+    res.is_ok()
 }

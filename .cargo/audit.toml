@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0009", # time: Denial of Service via Stack Exhaustion (Locked by upstream tract-linalg v0.21.15)
+    "RUSTSEC-2024-0436", # paste: unmaintained (upstream dependency of tract-core)
+
+]
