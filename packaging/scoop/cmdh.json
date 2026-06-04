@@ -1,0 +1,23 @@
+{
+    "version": "0.1.0",
+    "description": "Decentralized registry and offline search tool for AI Agents",
+    "homepage": "https://cmdhub.org",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Xuepoo/cmdhub-oss/releases/download/v0.1.0/cmdh-windows-x86_64.zip",
+            "hash": "SKIP"
+        }
+    },
+    "bin": "cmdh.exe",
+    "checkver": {
+        "github": "https://github.com/Xuepoo/cmdhub-oss"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Xuepoo/cmdhub-oss/releases/download/v$version/cmdh-windows-x86_64.zip"
+            }
+        }
+    }
+}
