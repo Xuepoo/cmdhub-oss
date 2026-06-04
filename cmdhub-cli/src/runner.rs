@@ -1,3 +1,4 @@
+use crate::config::Config;
 use anyhow::{Context, Result};
 use cmdhub_shared::{AciCommandContract, CmdHubError, DbAciRecord, RiskLevel};
 use rusqlite::Connection;
@@ -45,6 +46,7 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
 }
 
 pub fn run_command(
+    config: &Config,
     conn: &Connection,
     cmd_path: &str,
     args: &[String],
@@ -54,31 +56,45 @@ pub fn run_command(
 
     // Safety Gate
     if contract.risk_level == RiskLevel::Dangerous && !skip_gating {
-        use std::io::IsTerminal;
-        if std::env::var("CMD_TEST").is_ok() || !std::io::stdin().is_terminal() {
-            return Err(anyhow::anyhow!(CmdHubError::ExecutionBlocked {
-                risk_level: "dangerous".to_string(),
-                command: contract.cmd_path.clone(),
-            }));
-        }
+        match config.risk_guard_level.as_str() {
+            "allow" => {
+                // proceed to execution without prompts or errors
+            }
+            "block" => {
+                return Err(anyhow::anyhow!(CmdHubError::ExecutionBlocked {
+                    risk_level: "dangerous".to_string(),
+                    command: contract.cmd_path.clone(),
+                }));
+            }
+            _ => {
+                // "ask"
+                use std::io::IsTerminal;
+                if std::env::var("CMD_TEST").is_ok() || !std::io::stdin().is_terminal() {
+                    return Err(anyhow::anyhow!(CmdHubError::ExecutionBlocked {
+                        risk_level: "dangerous".to_string(),
+                        command: contract.cmd_path.clone(),
+                    }));
+                }
 
-        eprintln!("\x1b[31;1m[WARNING] RISK LEVEL IS DANGEROUS!\x1b[0m");
-        eprintln!("\x1b[31;1mThis command may have destructive side effects, file deletions, or privilege escalations.\x1b[0m");
-        eprintln!("\x1b[31;1mCommand Path: {}\x1b[0m", contract.cmd_path);
-        eprintln!("\x1b[31;1mDescription: {}\x1b[0m", contract.description);
-        eprint!("Are you sure you want to execute this command? (y/yes to confirm): ");
-        io::stderr().flush()?;
+                eprintln!("\x1b[31;1m[WARNING] RISK LEVEL IS DANGEROUS!\x1b[0m");
+                eprintln!("\x1b[31;1mThis command may have destructive side effects, file deletions, or privilege escalations.\x1b[0m");
+                eprintln!("\x1b[31;1mCommand Path: {}\x1b[0m", contract.cmd_path);
+                eprintln!("\x1b[31;1mDescription: {}\x1b[0m", contract.description);
+                eprint!("Are you sure you want to execute this command? (y/yes to confirm): ");
+                io::stderr().flush()?;
 
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .context("Failed to read user confirmation from standard input")?;
-        let trimmed = input.trim().to_lowercase();
-        if trimmed != "y" && trimmed != "yes" {
-            return Err(anyhow::anyhow!(CmdHubError::ExecutionBlocked {
-                risk_level: "dangerous".to_string(),
-                command: contract.cmd_path.clone(),
-            }));
+                let mut input = String::new();
+                io::stdin()
+                    .read_line(&mut input)
+                    .context("Failed to read user confirmation from standard input")?;
+                let trimmed = input.trim().to_lowercase();
+                if trimmed != "y" && trimmed != "yes" {
+                    return Err(anyhow::anyhow!(CmdHubError::ExecutionBlocked {
+                        risk_level: "dangerous".to_string(),
+                        command: contract.cmd_path.clone(),
+                    }));
+                }
+            }
         }
     }
 

@@ -216,7 +216,7 @@ package_managers = ["uv", "npm", "cargo", "go"]
             args,
             yes,
         } => {
-            runner::run_command(&conn, &cmd_path, &args, yes)?;
+            runner::run_command(&config, &conn, &cmd_path, &args, yes)?;
         }
         Commands::Install { sub } => match sub {
             InstallAction::Vector { from_file, force } => {
