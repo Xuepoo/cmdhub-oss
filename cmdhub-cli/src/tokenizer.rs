@@ -119,6 +119,32 @@ impl Tokenizer {
 
         (token_ids, attention_mask)
     }
+
+    pub fn tokenize_passage(&self, text: &str) -> (Vec<i64>, Vec<i64>) {
+        let preprocessed = self.preprocess_text(text);
+        let mut token_ids = vec![101]; // [CLS]
+
+        for word in preprocessed.split_whitespace() {
+            token_ids.extend(self.tokenize_word(word));
+        }
+
+        token_ids.push(102); // [SEP]
+
+        let len = token_ids.len();
+        let mut attention_mask = vec![1; len];
+
+        if token_ids.len() > 512 {
+            token_ids.truncate(512);
+            attention_mask.truncate(512);
+        } else {
+            while token_ids.len() < 512 {
+                token_ids.push(0); // [PAD]
+                attention_mask.push(0);
+            }
+        }
+
+        (token_ids, attention_mask)
+    }
 }
 
 #[cfg(test)]
