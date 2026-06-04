@@ -22,6 +22,7 @@ mode = "full"
 
     // 1. Run logout when not logged in
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
+    cmd.env("XDG_CONFIG_HOME", config_dir.path());
     cmd.arg("--config").arg(&config_path).arg("logout");
     cmd.assert()
         .success()
@@ -69,6 +70,7 @@ mode = "full"
 
     // 4. Run logout command when logged in
     let mut cmd2 = Command::cargo_bin("cmdh").unwrap();
+    cmd2.env("XDG_CONFIG_HOME", config_dir.path());
     cmd2.arg("--config").arg(&config_path).arg("logout");
     cmd2.assert().success().stdout(predicate::str::contains(
         "Successfully logged out and cleared local credentials.",
