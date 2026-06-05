@@ -145,6 +145,8 @@ pub struct IncrementalSyncPayload {
     pub apps: Vec<DbApp>,
     pub arguments: Vec<DbArgument>,
     pub command_vecs: Vec<DbCommandVec>,
+    #[serde(default)]
+    pub deleted_apps: Vec<String>,
 }
 
 /// Database record representing the `apps` table row.

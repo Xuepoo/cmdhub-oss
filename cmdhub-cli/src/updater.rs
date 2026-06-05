@@ -181,6 +181,7 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
 
         let mut conn = rusqlite::Connection::open(&live_db_path)
             .context("Failed to open live database for incremental update")?;
+        let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
 
         unsafe {
             type SqliteVecInitFn = unsafe extern "C" fn();
@@ -195,7 +196,42 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
 
         crate::db::init_db(&tx)?;
 
+        // Helper helper to delete commands and associated index entries for a given app_id
+        let delete_app_commands = |tx_ref: &rusqlite::Transaction,
+                                   target_app_id: &str|
+         -> Result<()> {
+            let mut stmt = tx_ref.prepare("SELECT cmd_path FROM arguments WHERE app_id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![target_app_id])?;
+            while let Some(row) = rows.next()? {
+                let cmd_path: String = row.get(0)?;
+                let _ = tx_ref.execute(
+                    "DELETE FROM apps_fts WHERE cmd_path = ?1",
+                    rusqlite::params![cmd_path],
+                );
+                let _ = tx_ref.execute(
+                    "DELETE FROM commands_vec WHERE cmd_path = ?1",
+                    rusqlite::params![cmd_path],
+                );
+            }
+            tx_ref.execute(
+                "DELETE FROM arguments WHERE app_id = ?1",
+                rusqlite::params![target_app_id],
+            )?;
+            Ok(())
+        };
+
+        // 1. Process deleted/archived apps
+        for app_id in payload.deleted_apps {
+            delete_app_commands(&tx, &app_id)?;
+            tx.execute(
+                "DELETE FROM apps WHERE app_id = ?1",
+                rusqlite::params![app_id],
+            )?;
+        }
+
+        // 2. Process updated/inserted apps
         for app in payload.apps {
+            delete_app_commands(&tx, &app.app_id)?;
             tx.execute(
                 "INSERT OR REPLACE INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
                 rusqlite::params![app.app_id, app.name, app.install_instructions],
@@ -304,6 +340,7 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
 
         let _ = dst_conn.execute("PRAGMA journal_mode = WAL;", []);
         let _ = dst_conn.execute("PRAGMA synchronous = NORMAL;", []);
+        let _ = dst_conn.execute("PRAGMA foreign_keys = ON;", []);
 
         let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)
             .context("Failed to initialize SQLite backup")?;

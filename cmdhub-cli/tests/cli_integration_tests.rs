@@ -653,3 +653,251 @@ async fn test_auto_model_download() {
     let downloaded_content = std::fs::read(&temp_model_path).unwrap();
     assert_eq!(downloaded_content, mock_data);
 }
+
+#[tokio::test]
+async fn test_client_incremental_sync_deletions_and_updates() {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let config_dir = tmp.path().to_path_buf();
+
+    // Set XDG dirs
+    std::env::set_var("XDG_CONFIG_HOME", &config_dir);
+    std::env::set_var("XDG_DATA_HOME", &config_dir);
+
+    // 1. Initialize DB with some apps/arguments/vecs
+    {
+        let conn = open_db().unwrap();
+        init_db(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO apps (app_id, name) VALUES ('org.test.app1', 'App One')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO apps (app_id, name) VALUES ('org.test.app2', 'App Two')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level) \
+             VALUES ('app1.cmd1', 'org.test.app1', 'cmd1', 'root', 'Test Command 1', 'safe')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level) \
+             VALUES ('app2.cmd2', 'org.test.app2', 'cmd2', 'root', 'Test Command 2', 'safe')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES ('app1.cmd1', 'App One', 'Test Command 1')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES ('app2.cmd2', 'App Two', 'Test Command 2')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO sync_meta (key, value) VALUES ('last_sync_time', '1000')",
+            [],
+        )
+        .unwrap();
+    }
+
+    // 2. We mock an IncrementalSyncPayload
+    let payload = cmdhub_shared::IncrementalSyncPayload {
+        apps: vec![cmdhub_shared::DbApp {
+            app_id: "org.test.app2".to_string(),
+            name: "App Two Updated".to_string(),
+            install_instructions: None,
+        }],
+        arguments: vec![cmdhub_shared::DbArgument {
+            cmd_path: "app2.cmd3".to_string(),
+            app_id: "org.test.app2".to_string(),
+            node_name: "cmd3".to_string(),
+            node_type: "root".to_string(),
+            description: "Test Command 3".to_string(),
+            risk_level: "safe".to_string(),
+            example_template: None,
+            docker_image: None,
+            script_url: None,
+            source_url: None,
+        }],
+        command_vecs: vec![],
+        deleted_apps: vec!["org.test.app1".to_string()],
+    };
+
+    // Serialize payload to JSON and compress with zstd
+    let json_bytes = serde_json::to_vec(&payload).unwrap();
+    let compressed = zstd::encode_all(&json_bytes[..], 3).unwrap();
+
+    // Generate keys to sign
+    let seed = [42u8; 32];
+    let signing_key = SigningKey::from_bytes(&seed);
+    let verifying_key = signing_key.verifying_key();
+    let pub_key_bytes = verifying_key.to_bytes();
+    let pub_key_hex = pub_key_bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    let mut hasher = Sha256::new();
+    hasher.update(&compressed);
+    let hash_result: [u8; 32] = hasher.finalize().into();
+    let signature = signing_key.sign(&hash_result);
+    let sig_bytes = signature.to_bytes().to_vec();
+
+    // Start ephemeral mock server
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server_url = format!("http://127.0.0.1:{}", port);
+
+    let manifest = cmdhub_shared::UpdateManifest {
+        version: "0.1.0".to_string(),
+        mode: Some("incremental".to_string()),
+        etag: "mock-etag".to_string(),
+        db_url: format!("{}/dummy.db.zst", server_url),
+        sig_url: format!("{}/dummy.sig", server_url),
+        sha256: hash_result
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>(),
+        new_sync_time: Some(2000),
+    };
+
+    let manifest_json = serde_json::to_string(&manifest).unwrap();
+    let compressed_clone = compressed.clone();
+    let sig_bytes_clone = sig_bytes.clone();
+
+    let _server_thread = thread::spawn(move || {
+        // 1. Manifest request
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0; 1024];
+            let _ = stream.read(&mut buffer);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                manifest_json.len(), manifest_json
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+        // 2. Payload request
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0; 1024];
+            let _ = stream.read(&mut buffer);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                compressed_clone.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(&compressed_clone);
+            let _ = stream.flush();
+        }
+        // 3. Signature request
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0; 1024];
+            let _ = stream.read(&mut buffer);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                sig_bytes_clone.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(&sig_bytes_clone);
+            let _ = stream.flush();
+        }
+    });
+
+    let config = cmdhub_cli::config::Config {
+        api_url: server_url,
+        public_key: pub_key_hex,
+        timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    drop(_guard);
+
+    // Run updater
+    cmdhub_cli::updater::update_database(&config, false)
+        .await
+        .unwrap();
+
+    // Verify DB state
+    let conn = open_db().unwrap();
+
+    // 'org.test.app1' should be deleted (and its commands cascading deleted)
+    let app1_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM apps WHERE app_id = 'org.test.app1')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!app1_exists);
+
+    let arg1_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM arguments WHERE cmd_path = 'app1.cmd1')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!arg1_exists);
+
+    // FTS entry for 'app1.cmd1' should be deleted
+    let fts1_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM apps_fts WHERE cmd_path = 'app1.cmd1')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!fts1_exists);
+
+    // 'org.test.app2' name should be updated
+    let app2_name: String = conn
+        .query_row(
+            "SELECT name FROM apps WHERE app_id = 'org.test.app2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(app2_name, "App Two Updated");
+
+    // 'app2.cmd2' should be removed since app2 was updated and cmd2 was not in the payload
+    let arg2_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM arguments WHERE cmd_path = 'app2.cmd2')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!arg2_exists);
+
+    // 'app2.cmd3' should exist
+    let arg3_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM arguments WHERE cmd_path = 'app2.cmd3')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(arg3_exists);
+
+    // sync_meta should have last_sync_time = '2000'
+    let sync_time: String = conn
+        .query_row(
+            "SELECT value FROM sync_meta WHERE key = 'last_sync_time'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sync_time, "2000");
+}
