@@ -15,6 +15,7 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
             arg.description, \
             arg.risk_level, \
             arg.example_template, \
+            app.os_aliases, \
             app.install_instructions, \
             arg.docker_image, \
             arg.script_url, \
@@ -34,10 +35,11 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
                 description: row.get(4)?,
                 risk_level: row.get(5)?,
                 example_template: row.get(6)?,
-                install_instructions: row.get(7)?,
-                docker_image: row.get(8)?,
-                script_url: row.get(9)?,
-                source_url: row.get(10)?,
+                os_aliases: row.get(7)?,
+                install_instructions: row.get(8)?,
+                docker_image: row.get(9)?,
+                script_url: row.get(10)?,
+                source_url: row.get(11)?,
             })
         })
         .context("Command path not found in database")?;
@@ -99,10 +101,21 @@ pub fn run_command(
     }
 
     // Prepare executable
-    let executable = &contract.name;
+    let executable = crate::dto::resolve_binary_name(&contract, config);
+
+    // Check if installed
+    if !crate::dto::check_is_installed(&contract, config) {
+        eprintln!(
+            "Warning: command '{}' is not installed locally.",
+            executable
+        );
+        if let Some(install_cmd) = crate::dto::resolve_install_command(&contract, config) {
+            eprintln!("To install, run: {}", install_cmd);
+        }
+    }
 
     // Spawn the subprocess
-    let mut child = Command::new(executable)
+    let mut child = Command::new(&executable)
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

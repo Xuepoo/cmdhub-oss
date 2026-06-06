@@ -179,6 +179,7 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
             } else {
                 format!("{} {}", target.path, sub_path.join(" "))
             }),
+            os_aliases: None,
             install_instructions: None,
             docker_image: None,
             script_url: None,

@@ -82,11 +82,12 @@ fn preprocess_query(query: &str, use_and: bool) -> String {
     }
 }
 
-pub fn search_commands(
+pub fn search_cascading(
     conn: &Connection,
     query: &str,
     query_vector: Option<&[f32]>,
     limit: usize,
+    enable_vector: bool,
 ) -> Result<Vec<AciCommandContract>> {
     let and_query = preprocess_query(query, true);
     let or_query = preprocess_query(query, false);
@@ -106,7 +107,7 @@ pub fn search_commands(
 
     let processed_query = if and_match { and_query } else { or_query };
 
-    // 1. Fast exact-match short-circuiting check (LOWER check for path/name)
+    // 1. Fast exact-match check (LOWER check for path/name)
     let trimmed_query = query.trim().to_lowercase();
     let mut exact_stmt = conn.prepare(
         "SELECT \
@@ -117,6 +118,7 @@ pub fn search_commands(
             arg.description, \
             arg.risk_level, \
             arg.example_template, \
+            app.os_aliases, \
             app.install_instructions, \
             arg.docker_image, \
             arg.script_url, \
@@ -141,10 +143,11 @@ pub fn search_commands(
                 description: row.get(4)?,
                 risk_level: row.get(5)?,
                 example_template: row.get(6)?,
-                install_instructions: row.get(7)?,
-                docker_image: row.get(8)?,
-                script_url: row.get(9)?,
-                source_url: row.get(10)?,
+                os_aliases: row.get(7)?,
+                install_instructions: row.get(8)?,
+                docker_image: row.get(9)?,
+                script_url: row.get(10)?,
+                source_url: row.get(11)?,
             })
         },
     )?;
@@ -156,6 +159,285 @@ pub fn search_commands(
         }
     }
 
+    // 2. Stage 1 App Filter: Threshold check
+    if let (true, Some(q_vec)) = (enable_vector, query_vector) {
+        let mut vec_bytes = Vec::with_capacity(q_vec.len() * 4);
+        for &val in q_vec {
+            vec_bytes.extend_from_slice(&val.to_ne_bytes());
+        }
+
+        // Get highest similarity score among root commands
+        let highest_sim: f32 = conn
+            .query_row(
+                "SELECT (1.0 - cv.distance) as similarity \
+             FROM commands_vec cv \
+             JOIN arguments arg ON cv.cmd_path = arg.cmd_path \
+             WHERE cv.embedding MATCH :query_vector AND cv.k = 100 AND arg.node_type = 'root' \
+             ORDER BY cv.distance ASC \
+             LIMIT 1",
+                rusqlite::named_params! {
+                    ":query_vector": vec_bytes,
+                },
+                |row| row.get(0),
+            )
+            .unwrap_or(0.0);
+
+        if highest_sim < 0.35 {
+            // Check FTS5 match count
+            let fts_count: u64 = conn
+                .query_row(
+                    "SELECT count(*) FROM apps_fts WHERE apps_fts MATCH :query",
+                    rusqlite::named_params! {
+                        ":query": &processed_query,
+                    },
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+
+            if fts_count == 0 {
+                // Fail immediately
+                return Ok(exact_results);
+            }
+        }
+    }
+
+    // 3. Stage 1 App Filter: Get top 3 app_ids
+    let mut top_apps = Vec::new();
+    if let (true, Some(q_vec)) = (enable_vector, query_vector) {
+        let mut vec_bytes = Vec::with_capacity(q_vec.len() * 4);
+        for &val in q_vec {
+            vec_bytes.extend_from_slice(&val.to_ne_bytes());
+        }
+
+        let mut app_stmt = conn.prepare(
+            "WITH fts_matched AS ( \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
+                FROM apps_fts \
+                WHERE apps_fts MATCH :query \
+                LIMIT 100 \
+            ), \
+            fts_ordered AS ( \
+                SELECT arg.app_id, MIN(m.fts_pos) as fts_pos \
+                FROM fts_matched m \
+                JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+                GROUP BY arg.app_id \
+            ), \
+            vec_rank AS ( \
+                SELECT arg.app_id, row_number() OVER (ORDER BY cv.distance ASC) as vec_pos \
+                FROM commands_vec cv \
+                JOIN arguments arg ON cv.cmd_path = arg.cmd_path \
+                WHERE cv.embedding MATCH :query_vector AND cv.k = 100 AND arg.node_type = 'root' \
+            ) \
+            SELECT \
+                COALESCE(fts.app_id, vec.app_id) as app_id, \
+                COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) as rrf_score \
+            FROM ( \
+                SELECT app_id FROM fts_ordered \
+                UNION \
+                SELECT app_id FROM vec_rank \
+            ) u \
+            LEFT JOIN fts_ordered fts ON u.app_id = fts.app_id \
+            LEFT JOIN vec_rank vec ON u.app_id = vec.app_id \
+            ORDER BY rrf_score DESC \
+            LIMIT 3"
+        )?;
+
+        let app_rows = app_stmt.query_map(
+            rusqlite::named_params! {
+                ":query": &processed_query,
+                ":query_vector": vec_bytes,
+            },
+            |row| row.get::<_, String>(0),
+        )?;
+
+        for app_id in app_rows.flatten() {
+            top_apps.push(app_id);
+        }
+    } else {
+        let mut app_stmt = conn.prepare(
+            "WITH fts_matched AS ( \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
+                FROM apps_fts \
+                WHERE apps_fts MATCH :query \
+                LIMIT 100 \
+            ), \
+            fts_ordered AS ( \
+                SELECT arg.app_id, MIN(m.fts_pos) as fts_pos \
+                FROM fts_matched m \
+                JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+                GROUP BY arg.app_id \
+            ) \
+            SELECT app_id \
+            FROM fts_ordered \
+            ORDER BY fts_pos ASC \
+            LIMIT 3"
+        )?;
+
+        let app_rows = app_stmt.query_map(
+            rusqlite::named_params! {
+                ":query": &processed_query,
+            },
+            |row| row.get::<_, String>(0),
+        )?;
+
+        for app_id in app_rows.flatten() {
+            top_apps.push(app_id);
+        }
+    }
+
+    if top_apps.is_empty() {
+        return Ok(exact_results);
+    }
+
+    // Pad top_apps to length 3
+    while top_apps.len() < 3 {
+        top_apps.push(top_apps[0].clone());
+    }
+
+    // Stage 2: Scoped search
+    let mut results = Vec::new();
+    if let (true, Some(q_vec)) = (enable_vector, query_vector) {
+        let mut vec_bytes = Vec::with_capacity(q_vec.len() * 4);
+        for &val in q_vec {
+            vec_bytes.extend_from_slice(&val.to_ne_bytes());
+        }
+
+        let mut stmt = conn.prepare(
+            "WITH fts_rank AS ( \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
+                FROM apps_fts WHERE apps_fts MATCH :query \
+                LIMIT 100 \
+            ), \
+            vec_rank AS ( \
+                SELECT cmd_path, row_number() OVER (ORDER BY distance ASC) as vec_pos \
+                FROM commands_vec \
+                WHERE embedding MATCH :query_vector AND k = 100 \
+            ) \
+            SELECT \
+                arg.app_id, \
+                app.name, \
+                arg.cmd_path, \
+                arg.node_type, \
+                arg.description, \
+                arg.risk_level, \
+                arg.example_template, \
+                app.os_aliases, \
+                app.install_instructions, \
+                arg.docker_image, \
+                arg.script_url, \
+                arg.source_url \
+            FROM arguments arg \
+            JOIN apps app ON arg.app_id = app.app_id \
+            LEFT JOIN fts_rank fts ON arg.cmd_path = fts.cmd_path \
+            LEFT JOIN vec_rank vec ON arg.cmd_path = vec.cmd_path \
+            WHERE (fts.cmd_path IS NOT NULL OR vec.cmd_path IS NOT NULL) \
+              AND arg.app_id IN (:app1, :app2, :app3) \
+            ORDER BY COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) DESC \
+            LIMIT :limit_num"
+        )?;
+
+        let rows = stmt.query_map(
+            rusqlite::named_params! {
+                ":query": &processed_query,
+                ":query_vector": vec_bytes,
+                ":app1": &top_apps[0],
+                ":app2": &top_apps[1],
+                ":app3": &top_apps[2],
+                ":limit_num": limit,
+            },
+            |row| {
+                Ok(DbAciRecord {
+                    app_id: row.get(0)?,
+                    name: row.get(1)?,
+                    cmd_path: row.get(2)?,
+                    node_type: row.get(3)?,
+                    description: row.get(4)?,
+                    risk_level: row.get(5)?,
+                    example_template: row.get(6)?,
+                    os_aliases: row.get(7)?,
+                    install_instructions: row.get(8)?,
+                    docker_image: row.get(9)?,
+                    script_url: row.get(10)?,
+                    source_url: row.get(11)?,
+                })
+            },
+        )?;
+
+        for r in rows {
+            let record = r?;
+            if let Ok(contract) = AciCommandContract::try_from(record) {
+                results.push(contract);
+            }
+        }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT \
+                arg.app_id, \
+                app.name, \
+                arg.cmd_path, \
+                arg.node_type, \
+                arg.description, \
+                arg.risk_level, \
+                arg.example_template, \
+                app.os_aliases, \
+                app.install_instructions, \
+                arg.docker_image, \
+                arg.script_url, \
+                arg.source_url \
+            FROM arguments arg \
+            JOIN apps app ON arg.app_id = app.app_id \
+            JOIN apps_fts fts ON arg.cmd_path = fts.cmd_path \
+            WHERE apps_fts MATCH :query \
+              AND arg.app_id IN (:app1, :app2, :app3) \
+            ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC \
+            LIMIT :limit_num",
+        )?;
+
+        let rows = stmt.query_map(
+            rusqlite::named_params! {
+                ":query": &processed_query,
+                ":app1": &top_apps[0],
+                ":app2": &top_apps[1],
+                ":app3": &top_apps[2],
+                ":limit_num": limit,
+            },
+            |row| {
+                Ok(DbAciRecord {
+                    app_id: row.get(0)?,
+                    name: row.get(1)?,
+                    cmd_path: row.get(2)?,
+                    node_type: row.get(3)?,
+                    description: row.get(4)?,
+                    risk_level: row.get(5)?,
+                    example_template: row.get(6)?,
+                    os_aliases: row.get(7)?,
+                    install_instructions: row.get(8)?,
+                    docker_image: row.get(9)?,
+                    script_url: row.get(10)?,
+                    source_url: row.get(11)?,
+                })
+            },
+        )?;
+
+        for r in rows {
+            let record = r?;
+            if let Ok(contract) = AciCommandContract::try_from(record) {
+                results.push(contract);
+            }
+        }
+    }
+
+    let mut final_results = exact_results.clone();
+    final_results.append(&mut results);
+    Ok(final_results)
+}
+
+pub fn search_commands(
+    conn: &Connection,
+    query: &str,
+    query_vector: Option<&[f32]>,
+    limit: usize,
+) -> Result<Vec<AciCommandContract>> {
     // Check if commands_vec table exists and has any data
     let mut has_vector_db = false;
     if query_vector.is_some() {
@@ -178,133 +460,7 @@ pub fn search_commands(
         }
     }
 
-    if has_vector_db {
-        let q_vec = query_vector.unwrap();
-        let mut vec_bytes = Vec::with_capacity(q_vec.len() * 4);
-        for &val in q_vec {
-            vec_bytes.extend_from_slice(&val.to_ne_bytes());
-        }
-        let mut stmt = conn.prepare(
-            "WITH fts_rank AS ( \
-                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
-                FROM apps_fts WHERE apps_fts MATCH :query \
-                LIMIT 100 \
-            ), \
-            vec_rank AS ( \
-                SELECT cmd_path, row_number() OVER (ORDER BY distance ASC) as vec_pos \
-                FROM commands_vec \
-                WHERE embedding MATCH :query_vector AND k = 100 \
-            ) \
-            SELECT \
-                arg.app_id, \
-                app.name, \
-                arg.cmd_path, \
-                arg.node_type, \
-                arg.description, \
-                arg.risk_level, \
-                arg.example_template, \
-                app.install_instructions, \
-                arg.docker_image, \
-                arg.script_url, \
-                arg.source_url \
-            FROM arguments arg \
-            JOIN apps app ON arg.app_id = app.app_id \
-            LEFT JOIN fts_rank fts ON arg.cmd_path = fts.cmd_path \
-            LEFT JOIN vec_rank vec ON arg.cmd_path = vec.cmd_path \
-            WHERE fts.cmd_path IS NOT NULL OR vec.cmd_path IS NOT NULL \
-            ORDER BY COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) DESC \
-            LIMIT :limit_num"
-        )?;
-
-        let rows = stmt.query_map(
-            rusqlite::named_params! {
-                ":query": processed_query,
-                ":query_vector": vec_bytes,
-                ":limit_num": limit,
-            },
-            |row| {
-                Ok(DbAciRecord {
-                    app_id: row.get(0)?,
-                    name: row.get(1)?,
-                    cmd_path: row.get(2)?,
-                    node_type: row.get(3)?,
-                    description: row.get(4)?,
-                    risk_level: row.get(5)?,
-                    example_template: row.get(6)?,
-                    install_instructions: row.get(7)?,
-                    docker_image: row.get(8)?,
-                    script_url: row.get(9)?,
-                    source_url: row.get(10)?,
-                })
-            },
-        )?;
-
-        let mut results = Vec::new();
-        for r in rows {
-            let record = r?;
-            if let Ok(contract) = AciCommandContract::try_from(record) {
-                results.push(contract);
-            }
-        }
-        let mut final_results = exact_results.clone();
-        final_results.append(&mut results);
-        Ok(final_results)
-    } else {
-        // Fallback to pure FTS5 MATCH BM25 search
-        let mut stmt = conn.prepare(
-            "SELECT \
-                arg.app_id, \
-                app.name, \
-                arg.cmd_path, \
-                arg.node_type, \
-                arg.description, \
-                arg.risk_level, \
-                arg.example_template, \
-                app.install_instructions, \
-                arg.docker_image, \
-                arg.script_url, \
-                arg.source_url \
-            FROM arguments arg \
-            JOIN apps app ON arg.app_id = app.app_id \
-            JOIN apps_fts fts ON arg.cmd_path = fts.cmd_path \
-            WHERE apps_fts MATCH :query \
-            ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC \
-            LIMIT :limit_num",
-        )?;
-
-        let rows = stmt.query_map(
-            rusqlite::named_params! {
-                ":query": processed_query,
-                ":limit_num": limit,
-            },
-            |row| {
-                Ok(DbAciRecord {
-                    app_id: row.get(0)?,
-                    name: row.get(1)?,
-                    cmd_path: row.get(2)?,
-                    node_type: row.get(3)?,
-                    description: row.get(4)?,
-                    risk_level: row.get(5)?,
-                    example_template: row.get(6)?,
-                    install_instructions: row.get(7)?,
-                    docker_image: row.get(8)?,
-                    script_url: row.get(9)?,
-                    source_url: row.get(10)?,
-                })
-            },
-        )?;
-
-        let mut results = Vec::new();
-        for r in rows {
-            let record = r?;
-            if let Ok(contract) = AciCommandContract::try_from(record) {
-                results.push(contract);
-            }
-        }
-        let mut final_results = exact_results.clone();
-        final_results.append(&mut results);
-        Ok(final_results)
-    }
+    search_cascading(conn, query, query_vector, limit, has_vector_db)
 }
 
 pub fn search_all(

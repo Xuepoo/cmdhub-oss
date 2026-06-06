@@ -30,7 +30,7 @@ pub enum RiskLevel {
 }
 
 /// Cross-platform installation instructions.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstallInstructions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brew: Option<String>,
@@ -42,6 +42,22 @@ pub struct InstallInstructions {
     pub cargo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scoop: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dnf: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub yum: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emerge: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apk: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zypper: Option<String>,
+    #[serde(rename = "nix-env", skip_serializing_if = "Option::is_none")]
+    pub nix_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub npm: Option<String>,
 
     #[serde(flatten)]
     #[serde(default)]
@@ -56,9 +72,34 @@ impl InstallInstructions {
             "pacman" => self.pacman.as_ref(),
             "cargo" => self.cargo.as_ref(),
             "scoop" => self.scoop.as_ref(),
+            "dnf" => self.dnf.as_ref(),
+            "yum" => self.yum.as_ref(),
+            "emerge" => self.emerge.as_ref(),
+            "apk" => self.apk.as_ref(),
+            "zypper" => self.zypper.as_ref(),
+            "nix-env" | "nix_env" => self.nix_env.as_ref(),
+            "pip" => self.pip.as_ref(),
+            "npm" => self.npm.as_ref(),
             _ => self.others.get(key),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum StringOrArray {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OsAliases {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linux: Option<StringOrArray>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macos: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows: Option<String>,
 }
 
 /// The core ACI command contract returned by CmdHub search.
@@ -82,6 +123,9 @@ pub struct AciCommandContract {
     /// Ready-to-execute template (e.g., "sl -l")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub example_template: Option<String>,
+    /// OS-specific aliases
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_aliases: Option<OsAliases>,
     /// Cross-platform install commands
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_instructions: Option<InstallInstructions>,
@@ -154,6 +198,7 @@ pub struct IncrementalSyncPayload {
 pub struct DbApp {
     pub app_id: String,
     pub name: String,
+    pub os_aliases: Option<String>,
     pub install_instructions: Option<String>,
 }
 
@@ -185,6 +230,7 @@ pub struct DbAciRecord {
     pub description: String,
     pub risk_level: String,
     pub example_template: Option<String>,
+    pub os_aliases: Option<String>,
     pub install_instructions: Option<String>,
     pub docker_image: Option<String>,
     pub script_url: Option<String>,
@@ -205,9 +251,16 @@ impl AciCommandContract {
             None
         };
 
+        let os_aliases = if let Some(ref aliases) = self.os_aliases {
+            Some(serde_json::to_string(aliases)?)
+        } else {
+            None
+        };
+
         let app = DbApp {
             app_id: self.app_id.clone(),
             name: self.name.clone(),
+            os_aliases,
             install_instructions,
         };
 
@@ -283,6 +336,21 @@ impl TryFrom<DbAciRecord> for AciCommandContract {
             None
         };
 
+        let os_aliases = if let Some(ref alias_str) = record.os_aliases {
+            if alias_str.trim().is_empty() {
+                None
+            } else {
+                Some(serde_json::from_str(alias_str).map_err(|e| {
+                    crate::error::CmdHubError::Validation(format!(
+                        "Failed to parse os_aliases JSON: {}",
+                        e
+                    ))
+                })?)
+            }
+        } else {
+            None
+        };
+
         Ok(AciCommandContract {
             app_id: record.app_id,
             name: record.name,
@@ -291,6 +359,7 @@ impl TryFrom<DbAciRecord> for AciCommandContract {
             description: record.description,
             risk_level,
             example_template: record.example_template,
+            os_aliases,
             install_instructions,
             docker_image: record.docker_image,
             script_url: record.script_url,
@@ -304,6 +373,7 @@ pub const CREATE_APPS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS apps (
     app_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    os_aliases TEXT,
     install_instructions TEXT
 );
 "#;
@@ -378,6 +448,14 @@ mod tests {
             description: "Display a train moving from left to right".to_string(),
             risk_level: RiskLevel::Safe,
             example_template: Some("sl -l".to_string()),
+            os_aliases: Some(OsAliases {
+                linux: Some(StringOrArray::Multiple(vec![
+                    "sl-prompt".to_string(),
+                    "sl".to_string(),
+                ])),
+                macos: Some("sl".to_string()),
+                windows: None,
+            }),
             install_instructions: None,
             docker_image: None,
             script_url: None,
@@ -389,6 +467,7 @@ mod tests {
         assert_eq!(contract.app_id, deserialized.app_id);
         assert_eq!(contract.cmd_path, deserialized.cmd_path);
         assert_eq!(contract.risk_level, deserialized.risk_level);
+        assert_eq!(contract.os_aliases, deserialized.os_aliases);
     }
 
     #[test]
@@ -410,6 +489,7 @@ mod tests {
             description: "Display a train moving from left to right".to_string(),
             risk_level: RiskLevel::Safe,
             example_template: Some("sl -l".to_string()),
+            os_aliases: None,
             install_instructions: Some(InstallInstructions {
                 brew: Some("brew install sl".to_string()),
                 apt: Some("sudo apt install sl".to_string()),
@@ -466,6 +546,7 @@ mod tests {
             description: db_arg.description,
             risk_level: db_arg.risk_level,
             example_template: db_arg.example_template,
+            os_aliases: db_app.os_aliases,
             install_instructions: db_app.install_instructions,
             docker_image: db_arg.docker_image,
             script_url: db_arg.script_url,

@@ -46,6 +46,7 @@ base64 = "0.22"
 tract-onnx = { workspace = true }
 flate2 = { workspace = true }
 libc = "0.2"
+which = { workspace = true }
 
 
 [dev-dependencies]

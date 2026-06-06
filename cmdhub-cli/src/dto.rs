@@ -23,6 +23,7 @@ pub struct FullDto {
     pub description: String,
     pub risk_level: String,
     pub example_template: Option<String>,
+    pub status: String,
     pub install_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image: Option<String>,
@@ -98,6 +99,53 @@ fn map_os_to_package_manager(os: &str) -> &str {
     }
 }
 
+pub fn resolve_binary_name(contract: &AciCommandContract, config: &Config) -> String {
+    let os = config.install.os.clone().or_else(detect_os);
+    let os_str = os.as_deref().unwrap_or("linux");
+
+    if let Some(ref aliases) = contract.os_aliases {
+        match os_str {
+            "windows" => aliases
+                .windows
+                .clone()
+                .unwrap_or_else(|| contract.name.clone()),
+            "macos" => aliases
+                .macos
+                .clone()
+                .unwrap_or_else(|| contract.name.clone()),
+            _ => {
+                // Linux or other unix-like
+                if let Some(ref linux_aliases) = aliases.linux {
+                    match linux_aliases {
+                        cmdhub_shared::StringOrArray::Single(s) => s.clone(),
+                        cmdhub_shared::StringOrArray::Multiple(arr) => {
+                            if arr.is_empty() {
+                                contract.name.clone()
+                            } else {
+                                for entry in arr {
+                                    if which::which(entry).is_ok() {
+                                        return entry.clone();
+                                    }
+                                }
+                                arr[0].clone()
+                            }
+                        }
+                    }
+                } else {
+                    contract.name.clone()
+                }
+            }
+        }
+    } else {
+        contract.name.clone()
+    }
+}
+
+pub fn check_is_installed(contract: &AciCommandContract, config: &Config) -> bool {
+    let binary_name = resolve_binary_name(contract, config);
+    which::which(&binary_name).is_ok()
+}
+
 pub fn format_results(
     contracts: Vec<AciCommandContract>,
     mode: &str,
@@ -128,6 +176,12 @@ pub fn format_results(
                 .into_iter()
                 .map(|c| {
                     let install_command = resolve_install_command(&c, config);
+                    let is_installed = check_is_installed(&c, config);
+                    let status = if is_installed {
+                        "installed".to_string()
+                    } else {
+                        "not_installed".to_string()
+                    };
                     FullDto {
                         app_id: c.app_id,
                         name: c.name,
@@ -136,6 +190,7 @@ pub fn format_results(
                         description: c.description,
                         risk_level: format!("{:?}", c.risk_level).to_lowercase(),
                         example_template: c.example_template,
+                        status,
                         install_command,
                         docker_image: c.docker_image,
                         script_url: c.script_url,
@@ -163,13 +218,14 @@ mod tests {
             description: "test".to_string(),
             risk_level: cmdhub_shared::RiskLevel::Safe,
             example_template: None,
+            os_aliases: None,
             install_instructions: Some(InstallInstructions {
                 brew: Some("brew install test".to_string()),
                 apt: Some("apt-get install test".to_string()),
                 pacman: None,
                 cargo: None,
                 scoop: Some("scoop install test".to_string()),
-                others: std::collections::HashMap::new(),
+                ..Default::default()
             }),
             docker_image: None,
             script_url: None,

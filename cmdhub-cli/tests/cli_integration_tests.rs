@@ -338,6 +338,7 @@ fn test_skills_integration() {
         description: "A completely custom command shortcut loaded from skills".to_string(),
         risk_level: RiskLevel::Safe,
         example_template: Some("custom_cmd --do-something".to_string()),
+        os_aliases: None,
         install_instructions: None,
         docker_image: None,
         script_url: None,
@@ -717,6 +718,7 @@ async fn test_client_incremental_sync_deletions_and_updates() {
         apps: vec![cmdhub_shared::DbApp {
             app_id: "org.test.app2".to_string(),
             name: "App Two Updated".to_string(),
+            os_aliases: None,
             install_instructions: None,
         }],
         arguments: vec![cmdhub_shared::DbArgument {
@@ -860,6 +862,15 @@ async fn test_client_incremental_sync_deletions_and_updates() {
         )
         .unwrap();
     assert!(!fts1_exists);
+
+    let all_apps: Vec<(String, String)> = conn
+        .prepare("SELECT app_id, name FROM apps")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0).unwrap(), row.get(1).unwrap())))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    println!("DEBUG: All apps in DB: {:?}", all_apps);
 
     // 'org.test.app2' name should be updated
     let app2_name: String = conn
