@@ -162,8 +162,36 @@ package_managers = ["uv", "npm", "cargo", "go"]
     let config = config::load_or_create_config(cli.config.clone())?;
 
     // 3. Open DB connection and ensure initialized
-    let conn = db::open_db()?;
-    db::init_db(&conn)?;
+    // For `update --force`, if the DB is corrupted, delete it and create fresh.
+    // SQLite's Connection::open does NOT validate the file — corruption is only
+    // detected when executing SQL (init_db), so we must handle both failure sites.
+    let conn = {
+        let is_force_update = matches!(cli.command, Commands::Update { force: true });
+
+        let try_open_init = || -> Result<rusqlite::Connection> {
+            let c = db::open_db()?;
+            db::init_db(&c)?;
+            Ok(c)
+        };
+
+        match try_open_init() {
+            Ok(c) => c,
+            Err(e) if is_force_update => {
+                eprintln!(
+                    "Warning: database is corrupt or missing ({}), deleting and recreating...",
+                    e
+                );
+                let db_path = db::resolve_db_path();
+                if db_path.exists() {
+                    std::fs::remove_file(&db_path)?;
+                }
+                let c = db::open_db()?;
+                db::init_db(&c)?;
+                c
+            }
+            Err(e) => return Err(e),
+        }
+    };
 
     match cli.command {
         Commands::Search {
