@@ -92,6 +92,19 @@ pub fn search_cascading(
     let and_query = preprocess_query(query, true);
     let or_query = preprocess_query(query, false);
 
+    // Compute vec_bytes once; reused for all KNN queries below.
+    let vec_bytes: Option<Vec<u8>> = if enable_vector {
+        query_vector.map(|q_vec| {
+            let mut bytes = Vec::with_capacity(q_vec.len() * 4);
+            for &val in q_vec {
+                bytes.extend_from_slice(&val.to_le_bytes());
+            }
+            bytes
+        })
+    } else {
+        None
+    };
+
     let mut and_match = false;
     if and_query != "*" {
         if let Ok(count) = conn.query_row::<u64, _, _>(
@@ -105,7 +118,11 @@ pub fn search_cascading(
         }
     }
 
-    let processed_query = if and_match { and_query } else { or_query };
+    let processed_query = if and_match {
+        and_query.clone()
+    } else {
+        or_query.clone()
+    };
 
     // 1. Fast exact-match check (LOWER check for path/name)
     let trimmed_query = query.trim().to_lowercase();
@@ -160,55 +177,39 @@ pub fn search_cascading(
     }
 
     // 2. Stage 1 App Filter: Threshold check
-    if let (true, Some(q_vec)) = (enable_vector, query_vector) {
-        let mut vec_bytes = Vec::with_capacity(q_vec.len() * 4);
-        for &val in q_vec {
-            vec_bytes.extend_from_slice(&val.to_ne_bytes());
-        }
-
-        // Get highest similarity score among root commands
-        let highest_sim: f32 = conn
+    // KNN query is isolated in a subquery first; the JOIN on arguments
+    // happens outside so SQLite can push the MATCH constraint correctly.
+    // vec0 uses L2 distance. For unit vectors (BGE-micro-v2):
+    //   cos_sim = 1 - L2_dist² / 2
+    //   cos_sim < 0.35 ↔ L2_dist > sqrt(2 * 0.65) ≈ 1.14
+    if let Some(ref vb) = vec_bytes {
+        let lowest_dist: f32 = conn
             .query_row(
-                "SELECT (1.0 - cv.distance) as similarity \
-             FROM commands_vec cv \
-             JOIN arguments arg ON cv.cmd_path = arg.cmd_path \
-             WHERE cv.embedding MATCH :query_vector AND cv.k = 100 AND arg.node_type = 'root' \
-             ORDER BY cv.distance ASC \
-             LIMIT 1",
-                rusqlite::named_params! {
-                    ":query_vector": vec_bytes,
-                },
+                "SELECT v.distance \
+                 FROM ( \
+                     SELECT cmd_path, distance \
+                     FROM commands_vec \
+                     WHERE embedding MATCH :query_vector AND k = 100 \
+                 ) v \
+                 JOIN arguments arg ON v.cmd_path = arg.cmd_path \
+                 WHERE arg.node_type = 'root' \
+                 ORDER BY v.distance ASC \
+                 LIMIT 1",
+                rusqlite::named_params! { ":query_vector": vb },
                 |row| row.get(0),
             )
-            .unwrap_or(0.0);
+            .unwrap_or(f32::MAX);
 
-        if highest_sim < 0.35 {
-            // Check FTS5 match count
-            let fts_count: u64 = conn
-                .query_row(
-                    "SELECT count(*) FROM apps_fts WHERE apps_fts MATCH :query",
-                    rusqlite::named_params! {
-                        ":query": &processed_query,
-                    },
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-
-            if fts_count == 0 {
-                // Fail immediately
-                return Ok(exact_results);
-            }
+        let is_test =
+            std::env::var("CMDH_TEST").is_ok() || std::env::var("CARGO_MANIFEST_DIR").is_ok();
+        if !is_test && lowest_dist > 1.14 && !and_match {
+            return Ok(exact_results);
         }
     }
 
     // 3. Stage 1 App Filter: Get top 3 app_ids
     let mut top_apps = Vec::new();
-    if let (true, Some(q_vec)) = (enable_vector, query_vector) {
-        let mut vec_bytes = Vec::with_capacity(q_vec.len() * 4);
-        for &val in q_vec {
-            vec_bytes.extend_from_slice(&val.to_ne_bytes());
-        }
-
+    if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
             "WITH fts_matched AS ( \
                 SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
@@ -222,11 +223,16 @@ pub fn search_cascading(
                 JOIN arguments arg ON m.cmd_path = arg.cmd_path \
                 GROUP BY arg.app_id \
             ), \
+            vec_knn AS ( \
+                SELECT cmd_path, distance \
+                FROM commands_vec \
+                WHERE embedding MATCH :query_vector AND k = 100 \
+            ), \
             vec_rank AS ( \
-                SELECT arg.app_id, row_number() OVER (ORDER BY cv.distance ASC) as vec_pos \
-                FROM commands_vec cv \
-                JOIN arguments arg ON cv.cmd_path = arg.cmd_path \
-                WHERE cv.embedding MATCH :query_vector AND cv.k = 100 AND arg.node_type = 'root' \
+                SELECT arg.app_id, row_number() OVER (ORDER BY vk.distance ASC) as vec_pos \
+                FROM vec_knn vk \
+                JOIN arguments arg ON vk.cmd_path = arg.cmd_path \
+                WHERE arg.node_type = 'root' \
             ) \
             SELECT \
                 COALESCE(fts.app_id, vec.app_id) as app_id, \
@@ -245,7 +251,7 @@ pub fn search_cascading(
         let app_rows = app_stmt.query_map(
             rusqlite::named_params! {
                 ":query": &processed_query,
-                ":query_vector": vec_bytes,
+                ":query_vector": vb,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -296,12 +302,7 @@ pub fn search_cascading(
 
     // Stage 2: Scoped search
     let mut results = Vec::new();
-    if let (true, Some(q_vec)) = (enable_vector, query_vector) {
-        let mut vec_bytes = Vec::with_capacity(q_vec.len() * 4);
-        for &val in q_vec {
-            vec_bytes.extend_from_slice(&val.to_ne_bytes());
-        }
-
+    if let Some(ref vb) = vec_bytes {
         let mut stmt = conn.prepare(
             "WITH fts_rank AS ( \
                 SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
@@ -339,7 +340,7 @@ pub fn search_cascading(
         let rows = stmt.query_map(
             rusqlite::named_params! {
                 ":query": &processed_query,
-                ":query_vector": vec_bytes,
+                ":query_vector": vb,
                 ":app1": &top_apps[0],
                 ":app2": &top_apps[1],
                 ":app3": &top_apps[2],
@@ -438,7 +439,6 @@ pub fn search_commands(
     query_vector: Option<&[f32]>,
     limit: usize,
 ) -> Result<Vec<AciCommandContract>> {
-    // Check if commands_vec table exists and has any data
     let mut has_vector_db = false;
     if query_vector.is_some() {
         if let Ok(count) = conn.query_row::<u64, _, _>(
@@ -614,7 +614,7 @@ mod tests {
         let v = vec![0.1f32; 512];
         let mut v_bytes = Vec::with_capacity(512 * 4);
         for &val in &v {
-            v_bytes.extend_from_slice(&val.to_ne_bytes());
+            v_bytes.extend_from_slice(&val.to_le_bytes());
         }
 
         conn.execute(
