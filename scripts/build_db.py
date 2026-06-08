@@ -242,6 +242,22 @@ def _init_db(path: str) -> sqlite3.Connection:
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
+_NOISE_LEAVES = {"help", "version", "completion", "bash", "zsh", "fish",
+                 "powershell", "--help", "-h", "--version"}
+
+
+def _is_noise_command(cmd_path: str) -> bool:
+    """True for non-root help/version/completion commands worth excluding from search."""
+    if "." not in cmd_path:
+        return False  # keep all root commands
+    parts = cmd_path.split(".")
+    leaf = parts[-1].lower()
+    if leaf in _NOISE_LEAVES:
+        return True
+    # shell-completion subtrees: anything under a `.completion.` path
+    return "completion" in parts[1:]
+
+
 def _embed_text(arg: dict) -> str:
     """Text fed to the embedder: the command path (as words) + its description.
 
@@ -299,16 +315,26 @@ def build(
     apps: list[dict] = data["apps"]
     raw_args: list[dict] = data["arguments"]
 
-    # Deduplicate by cmd_path
+    # Deduplicate by cmd_path, and drop noise subcommands (help/version/completion):
+    # these have near-identical descriptions across thousands of tools, are never the
+    # target of a search, and only dilute the vector space. Root commands are kept.
     seen: set[str] = set()
     arguments: list[dict] = []
+    noise = 0
     for a in raw_args:
-        if a["cmd_path"] not in seen:
-            seen.add(a["cmd_path"])
-            arguments.append(a)
-    dup = len(raw_args) - len(arguments)
+        cp = a["cmd_path"]
+        if cp in seen:
+            continue
+        seen.add(cp)
+        if _is_noise_command(cp):
+            noise += 1
+            continue
+        arguments.append(a)
+    dup = len(raw_args) - len(seen)
     if dup:
         print(f"[build-db] Dropped {dup} duplicate cmd_paths", file=sys.stderr, flush=True)
+    if noise:
+        print(f"[build-db] Dropped {noise} help/version/completion noise commands", file=sys.stderr, flush=True)
     total = len(arguments)
     print(f"[build-db] {len(apps)} apps, {total} arguments", file=sys.stderr, flush=True)
 
