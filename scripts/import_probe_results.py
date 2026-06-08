@@ -87,7 +87,7 @@ def _build_install_instructions(source: str, pkg: str) -> str | None:
         case "cargo":
             return json.dumps({"cargo": f"cargo install {pkg}"})
         case "go":
-            return json.dumps({"cargo": f"go install {pkg}@latest"})
+            return json.dumps({"go": f"go install {pkg}@latest"})
         case "aur":
             return json.dumps({"yay": f"yay -S {pkg}", "paru": f"paru -S {pkg}"})
         case _:
