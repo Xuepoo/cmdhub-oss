@@ -60,16 +60,46 @@ pub fn resolve_install_command(contract: &AciCommandContract, config: &Config) -
     }
 
     for (pm, is_sys) in candidates {
-        if let Some(cmd) = instructions.get_command(pm) {
+        if let Some(raw) = instructions.get_command(pm) {
+            // Normalize: if value is just a package name (no spaces, doesn't include PM keyword)
+            // expand to a full install command (e.g. "restic" → "pacman -S restic")
+            let cmd = normalize_install_cmd(pm, raw);
             return Some(if is_sys && !is_root_user() {
                 format!("sudo {}", cmd)
             } else {
-                cmd.clone()
+                cmd
             });
         }
     }
 
     None
+}
+
+fn normalize_install_cmd(pm: &str, raw: &str) -> String {
+    // If the stored value already looks like a full command (contains spaces or PM keyword), use as-is
+    if raw.contains(' ') || raw.starts_with(pm) {
+        return raw.to_string();
+    }
+    // Package name only — expand to canonical install command
+    match pm {
+        "pacman"           => format!("pacman -S {}", raw),
+        "apt"              => format!("apt install {}", raw),
+        "dnf"              => format!("dnf install {}", raw),
+        "apk"              => format!("apk add {}", raw),
+        "emerge"           => format!("emerge {}", raw),
+        "zypper"           => format!("zypper install {}", raw),
+        "yum"              => format!("yum install {}", raw),
+        "brew"             => format!("brew install {}", raw),
+        "scoop"            => format!("scoop install {}", raw),
+        "choco"            => format!("choco install {}", raw),
+        "nix-env" | "nix_env" => format!("nix-env -iA nixpkgs.{}", raw),
+        "yay"              => format!("yay -S {}", raw),
+        "paru"             => format!("paru -S {}", raw),
+        "pip"              => format!("pip install {}", raw),
+        "npm"              => format!("npm install -g {}", raw),
+        "cargo"            => format!("cargo install {}", raw),
+        _                  => raw.to_string(),
+    }
 }
 
 #[cfg(unix)]

@@ -482,6 +482,12 @@ pub fn search_cascading(
 
     let mut final_results = exact_results.clone();
     final_results.append(&mut results);
+
+    // Deduplicate: keep highest-ranked entry per app_id (same app from multiple sources,
+    // or root + subcommand both ranking — prefer the first/highest-ranked occurrence)
+    let mut seen_apps = std::collections::HashSet::new();
+    final_results.retain(|r| seen_apps.insert(r.app_id.clone()));
+
     Ok(final_results)
 }
 
