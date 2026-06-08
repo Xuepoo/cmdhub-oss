@@ -108,10 +108,15 @@ def _vec_to_bytes(vec: list[float]) -> bytes:
 def _worker(
     vocab_gz: str,
     model_path: str,
-    chunk: list[tuple[int, str]],  # (original_idx, description)
+    chunk: list[tuple[int, str]],  # (original_idx, text-to-embed)
     batch_size: int,
+    providers: list[str] | None = None,
 ) -> list[tuple[int, bytes]]:
-    """Subprocess worker: load vocab + ONNX, tokenize, infer, return [(idx, bytes)]."""
+    """Subprocess worker: load vocab + ONNX, tokenize, infer, return [(idx, bytes)].
+
+    With providers=['CUDAExecutionProvider', ...] this runs on the GPU in a single
+    process (much faster, far less system RAM than N CPU processes).
+    """
     import numpy as np
     import onnxruntime as ort
 
@@ -119,9 +124,16 @@ def _worker(
 
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    opts.intra_op_num_threads = 2  # 2 ORT threads per process; N processes × 2 ≤ core count
     opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    sess = ort.InferenceSession(model_path, sess_options=opts)
+    if providers and any("CUDA" in p or "Tensorrt" in p for p in providers):
+        # GPU: let ORT use as many CPU threads as it wants for tokenize-adjacent ops.
+        sess = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
+        active = sess.get_providers()
+        if not any("CUDA" in p or "Tensorrt" in p for p in active):
+            raise RuntimeError(f"GPU requested but ORT fell back to {active}")
+    else:
+        opts.intra_op_num_threads = 2  # 2 ORT threads per CPU process; N×2 ≤ core count
+        sess = ort.InferenceSession(model_path, sess_options=opts)
 
     # Map input names
     name_map: dict[str, str] = {}
@@ -230,6 +242,46 @@ def _init_db(path: str) -> sqlite3.Connection:
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
+def _embed_text(arg: dict) -> str:
+    """Text fed to the embedder: the command path (as words) + its description.
+
+    Embedding the path too means a query like "configure networking aws" matches
+    "aws ec2 create-vpc" via the path tokens, not the description alone — and it
+    spreads out otherwise-identical descriptions (e.g. many "Display help.").
+    """
+    path_words = arg["cmd_path"].replace(".", " ").replace("-", " ")
+    desc = arg.get("description") or ""
+    return f"{path_words}. {desc}".strip()
+
+
+# Keyword heuristic for risk_level (replaces per-command LLM judgement for the bulk).
+# A destructive/state-changing verb in the command path or description bumps the level.
+_DANGEROUS_KW = (
+    "delete", "destroy", "terminate", "remove", "rm ", "drop", "purge", "wipe",
+    "deregister", "revoke", "kill", "force-delete", "shutdown", "rmdir",
+)
+_MEDIUM_KW = (
+    "create", "update", "modify", "put", "set", "apply", "deploy", "restart",
+    "reboot", "scale", "attach", "detach", "rotate", "reset", "disable", "enable",
+    "stop", "start", "prune", "push", "import", "restore", "rollback", "patch",
+    "associate", "disassociate", "register", "add", "remove-",
+)
+
+
+def _risk_level(cmd_path: str, description: str, existing: str | None) -> str:
+    """Derive risk from verbs in the leaf command + description. Keeps any explicit
+    non-safe level already set (e.g. by an LLM pass); only upgrades from 'safe'/None."""
+    if existing and existing not in ("safe", "", None):
+        return existing
+    leaf = cmd_path.split(".")[-1].lower()
+    hay = f"{leaf} {description.lower()}"
+    if any(k in hay for k in _DANGEROUS_KW):
+        return "dangerous"
+    if any(k in hay for k in _MEDIUM_KW):
+        return "medium"
+    return "safe"
+
+
 def build(
     export_path: str,
     output_path: str,
@@ -237,6 +289,7 @@ def build(
     workers: int,
     batch_size: int,
     compress: bool,
+    device: str = "cpu",
 ) -> None:
     t0 = time.time()
 
@@ -259,46 +312,58 @@ def build(
     total = len(arguments)
     print(f"[build-db] {len(apps)} apps, {total} arguments", file=sys.stderr, flush=True)
 
-    # Partition into worker chunks
-    chunk_size = max(1, (total + workers - 1) // workers)
-    chunks: list[list[tuple[int, str]]] = []
-    for w in range(workers):
-        s = w * chunk_size
-        e = min(s + chunk_size, total)
-        if s < total:
-            chunks.append([(i, arguments[i]["description"]) for i in range(s, e)])
-
-    actual_workers = len(chunks)
-    print(
-        f"[build-db] Embedding: {actual_workers} processes × batch_size={batch_size}",
-        file=sys.stderr, flush=True,
-    )
-
     emb_results: dict[int, bytes] = {}
     completed = 0
 
-    with ProcessPoolExecutor(max_workers=actual_workers) as pool:
-        futs = {
-            pool.submit(_worker, VOCAB_GZ_PATH, model_path, chunk, batch_size): i
-            for i, chunk in enumerate(chunks)
-        }
-        for fut in as_completed(futs):
-            try:
-                chunk_res = fut.result()
-            except Exception as exc:
-                print(f"\n[error] Worker failed: {exc}", file=sys.stderr, flush=True)
-                raise
-            for orig_idx, emb_bytes in chunk_res:
-                emb_results[orig_idx] = emb_bytes
-            completed += len(chunk_res)
-            pct = completed * 100 // total
-            elapsed = time.time() - t0
-            rate = completed / elapsed if elapsed > 0 else 0
-            eta = int((total - completed) / rate) if rate > 0 else 0
-            print(
-                f"[build-db] {completed}/{total} ({pct}%) — {rate:.0f}/s — ETA {eta}s",
-                file=sys.stderr, flush=True,
-            )
+    if device == "cuda":
+        # Single-process GPU path: one CUDA session, no ProcessPool. Fast + low system RAM.
+        print(f"[build-db] Embedding on GPU (CUDAExecutionProvider), batch_size={batch_size}",
+              file=sys.stderr, flush=True)
+        chunk = [(i, _embed_text(arguments[i])) for i in range(total)]
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        for orig_idx, emb_bytes in _worker(VOCAB_GZ_PATH, model_path, chunk, batch_size, providers):
+            emb_results[orig_idx] = emb_bytes
+        completed = total
+        rate = completed / (time.time() - t0) if time.time() > t0 else 0
+        print(f"[build-db] {completed}/{total} (100%) — {rate:.0f}/s (GPU)", file=sys.stderr, flush=True)
+    else:
+        # Partition into CPU worker chunks
+        chunk_size = max(1, (total + workers - 1) // workers)
+        chunks: list[list[tuple[int, str]]] = []
+        for w in range(workers):
+            s = w * chunk_size
+            e = min(s + chunk_size, total)
+            if s < total:
+                chunks.append([(i, _embed_text(arguments[i])) for i in range(s, e)])
+
+        actual_workers = len(chunks)
+        print(
+            f"[build-db] Embedding: {actual_workers} CPU processes × batch_size={batch_size}",
+            file=sys.stderr, flush=True,
+        )
+
+        with ProcessPoolExecutor(max_workers=actual_workers) as pool:
+            futs = {
+                pool.submit(_worker, VOCAB_GZ_PATH, model_path, chunk, batch_size): i
+                for i, chunk in enumerate(chunks)
+            }
+            for fut in as_completed(futs):
+                try:
+                    chunk_res = fut.result()
+                except Exception as exc:
+                    print(f"\n[error] Worker failed: {exc}", file=sys.stderr, flush=True)
+                    raise
+                for orig_idx, emb_bytes in chunk_res:
+                    emb_results[orig_idx] = emb_bytes
+                completed += len(chunk_res)
+                pct = completed * 100 // total
+                elapsed = time.time() - t0
+                rate = completed / elapsed if elapsed > 0 else 0
+                eta = int((total - completed) / rate) if rate > 0 else 0
+                print(
+                    f"[build-db] {completed}/{total} ({pct}%) — {rate:.0f}/s — ETA {eta}s",
+                    file=sys.stderr, flush=True,
+                )
 
     t_embed = time.time() - t0
     print(f"[build-db] Embedding done in {t_embed:.1f}s", file=sys.stderr, flush=True)
@@ -362,7 +427,9 @@ def build(
                     a["cmd_path"], a["app_id"], a["node_name"],
                     # Enforce structural invariant from cmd_path shape
                     "root" if "." not in a["cmd_path"] else "sub",
-                    a["description"], a["risk_level"], a.get("example_template"),
+                    a["description"],
+                    _risk_level(a["cmd_path"], a.get("description") or "", a.get("risk_level")),
+                    a.get("example_template"),
                     a.get("docker_image"), a.get("script_url"), a.get("source_url"),
                 )
                 for a in batch
@@ -376,7 +443,8 @@ def build(
             "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?,?,?)",
             [(a["cmd_path"],
               _fts_name(a["app_id"], app_name_map.get(a["app_id"], a["app_id"])),
-              a["description"])
+              # capabilities = path words + description so keyword search hits e.g. "vpc"→create-vpc
+              f"{a['cmd_path'].replace('.', ' ').replace('-', ' ')} {a.get('description') or ''}")
              for a in batch],
         )
         conn.executemany(
@@ -472,6 +540,8 @@ def main() -> None:
     )
     ap.add_argument("--workers", "-w", type=int, default=8)
     ap.add_argument("--batch-size", type=int, default=128)
+    ap.add_argument("--device", choices=["cpu", "cuda"], default="cpu",
+                    help="cuda = single-process GPU embedding (fast, low system RAM)")
     ap.add_argument("--compress", action="store_true")
     args = ap.parse_args()
 
@@ -486,6 +556,7 @@ def main() -> None:
         workers=args.workers,
         batch_size=args.batch_size,
         compress=args.compress,
+        device=args.device,
     )
 
 

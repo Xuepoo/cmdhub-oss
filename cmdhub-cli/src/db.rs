@@ -483,10 +483,12 @@ pub fn search_cascading(
     let mut final_results = exact_results.clone();
     final_results.append(&mut results);
 
-    // Deduplicate: keep highest-ranked entry per app_id (same app from multiple sources,
-    // or root + subcommand both ranking — prefer the first/highest-ranked occurrence)
-    let mut seen_apps = std::collections::HashSet::new();
-    final_results.retain(|r| seen_apps.insert(r.app_id.clone()));
+    // Deduplicate by cmd_path: collapses the same command coming from multiple sources
+    // (e.g. org.archlinux.nb + org.tldr.nb both expose "nb"), while still allowing several
+    // distinct subcommands of one tool to surface (e.g. "aws ec2 create-vpc",
+    // "aws ec2 create-subnet" for a networking query) — which is the core search use case.
+    let mut seen_paths = std::collections::HashSet::new();
+    final_results.retain(|r| seen_paths.insert(r.cmd_path.clone()));
 
     Ok(final_results)
 }
