@@ -378,6 +378,28 @@ def build(
             file=sys.stderr, flush=True,
         )
 
+    # Merge install_instructions: copy arch/tldr source into same-named github/gitlab apps that
+    # have none. Official sources have richer probe data but may lack package manager entries.
+    merged = conn.execute("""
+        UPDATE apps SET install_instructions = (
+            SELECT b.install_instructions FROM apps b
+            WHERE b.name = apps.name
+              AND b.app_id != apps.app_id
+              AND b.install_instructions IS NOT NULL
+              AND length(b.install_instructions) > 2
+            ORDER BY CASE
+                WHEN b.app_id LIKE 'org.archlinux.%' THEN 1
+                WHEN b.app_id LIKE 'org.tldr.%' THEN 2
+                ELSE 0
+            END ASC
+            LIMIT 1
+        )
+        WHERE (install_instructions IS NULL OR length(install_instructions) <= 2)
+          AND (app_id LIKE 'com.github.%' OR app_id LIKE 'com.gitlab.%')
+    """).rowcount
+    conn.commit()
+    print(f"[build-db] Merged install_instructions into {merged} official-source apps", file=sys.stderr, flush=True)
+
     conn.execute(
         "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_sync_time', ?)",
         (str(int(time.time())),),

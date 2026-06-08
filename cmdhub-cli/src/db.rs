@@ -142,7 +142,8 @@ pub fn search_cascading(
             arg.source_url \
         FROM arguments arg \
         JOIN apps app ON arg.app_id = app.app_id \
-        WHERE LOWER(arg.cmd_path) = :query OR LOWER(app.name) = :query \
+        WHERE LOWER(arg.cmd_path) = :query \
+           OR (LOWER(app.name) = :query AND arg.node_type = 'root') \
         LIMIT :limit_num",
     )?;
 
@@ -208,44 +209,52 @@ pub fn search_cascading(
     }
 
     // 3. Stage 1 App Filter: Get top 3 app_ids
+    // Stage 1: select top 3 app_ids via RRF, with source priority multiplier and name dedup.
+    // Priority: official (com.github/com.gitlab) 1.5x > distro (org.archlinux) 1.0x > tldr 0.7x.
+    // Within same tool name, only the highest-scoring source is retained.
     let mut top_apps = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
             "WITH fts_matched AS ( \
                 SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
-                FROM apps_fts \
-                WHERE apps_fts MATCH :query \
-                LIMIT 100 \
+                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
             ), \
             fts_ordered AS ( \
                 SELECT arg.app_id, MIN(m.fts_pos) as fts_pos \
-                FROM fts_matched m \
-                JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+                FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
                 GROUP BY arg.app_id \
             ), \
             vec_knn AS ( \
-                SELECT cmd_path, distance \
-                FROM commands_vec \
+                SELECT cmd_path, distance FROM commands_vec \
                 WHERE embedding MATCH :query_vector AND k = 100 \
             ), \
             vec_rank AS ( \
                 SELECT arg.app_id, row_number() OVER (ORDER BY vk.distance ASC) as vec_pos \
-                FROM vec_knn vk \
-                JOIN arguments arg ON vk.cmd_path = arg.cmd_path \
+                FROM vec_knn vk JOIN arguments arg ON vk.cmd_path = arg.cmd_path \
                 WHERE arg.node_type = 'root' \
+            ), \
+            pre_scored AS ( \
+                SELECT \
+                    COALESCE(fts.app_id, vec.app_id) as app_id, \
+                    COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) as raw_rrf \
+                FROM (SELECT app_id FROM fts_ordered UNION SELECT app_id FROM vec_rank) u \
+                LEFT JOIN fts_ordered fts ON u.app_id = fts.app_id \
+                LEFT JOIN vec_rank vec ON u.app_id = vec.app_id \
+            ), \
+            scored AS ( \
+                SELECT app_id, raw_rrf * CASE \
+                    WHEN app_id LIKE 'com.github.%' OR app_id LIKE 'com.gitlab.%' THEN 1.5 \
+                    WHEN app_id LIKE 'org.tldr.%' THEN 0.7 \
+                    ELSE 1.0 \
+                END as rrf_score \
+                FROM pre_scored \
+            ), \
+            name_deduped AS ( \
+                SELECT s.app_id, s.rrf_score, \
+                       row_number() OVER (PARTITION BY a.name ORDER BY s.rrf_score DESC) as rn \
+                FROM scored s JOIN apps a ON s.app_id = a.app_id \
             ) \
-            SELECT \
-                COALESCE(fts.app_id, vec.app_id) as app_id, \
-                COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) as rrf_score \
-            FROM ( \
-                SELECT app_id FROM fts_ordered \
-                UNION \
-                SELECT app_id FROM vec_rank \
-            ) u \
-            LEFT JOIN fts_ordered fts ON u.app_id = fts.app_id \
-            LEFT JOIN vec_rank vec ON u.app_id = vec.app_id \
-            ORDER BY rrf_score DESC \
-            LIMIT 3"
+            SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 3"
         )?;
 
         let app_rows = app_stmt.query_map(
@@ -263,20 +272,27 @@ pub fn search_cascading(
         let mut app_stmt = conn.prepare(
             "WITH fts_matched AS ( \
                 SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
-                FROM apps_fts \
-                WHERE apps_fts MATCH :query \
-                LIMIT 100 \
+                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
             ), \
             fts_ordered AS ( \
                 SELECT arg.app_id, MIN(m.fts_pos) as fts_pos \
-                FROM fts_matched m \
-                JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+                FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
                 GROUP BY arg.app_id \
+            ), \
+            scored AS ( \
+                SELECT fo.app_id, (1.0 / (60.0 + fo.fts_pos)) * CASE \
+                    WHEN fo.app_id LIKE 'com.github.%' OR fo.app_id LIKE 'com.gitlab.%' THEN 1.5 \
+                    WHEN fo.app_id LIKE 'org.tldr.%' THEN 0.7 \
+                    ELSE 1.0 \
+                END as rrf_score \
+                FROM fts_ordered fo \
+            ), \
+            name_deduped AS ( \
+                SELECT s.app_id, s.rrf_score, \
+                       row_number() OVER (PARTITION BY a.name ORDER BY s.rrf_score DESC) as rn \
+                FROM scored s JOIN apps a ON s.app_id = a.app_id \
             ) \
-            SELECT app_id \
-            FROM fts_ordered \
-            ORDER BY fts_pos ASC \
-            LIMIT 3"
+            SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 3"
         )?;
 
         let app_rows = app_stmt.query_map(

@@ -37,33 +37,39 @@ pub fn resolve_install_command(contract: &AciCommandContract, config: &Config) -
     let instructions = contract.install_instructions.as_ref()?;
 
     let os = config.install.os.clone().or_else(detect_os);
-    let sys_installer = os.as_ref().map(|o| map_os_to_package_manager(o));
 
-    let mut resolved = None;
-    if let Some(installer) = sys_installer {
-        if let Some(cmd) = instructions.get_command(installer) {
-            resolved = Some((cmd.clone(), is_system_installer(installer)));
+    // Build ordered candidate list:
+    //   1. System package manager for the detected OS
+    //   2. OS-specific AUR helpers (arch: yay, paru)
+    //   3. User-configured package managers from config
+    let mut candidates: Vec<(&str, bool)> = Vec::new();
+
+    if let Some(ref os_str) = os {
+        let sys_pm = map_os_to_package_manager(os_str);
+        candidates.push((sys_pm, is_system_installer(sys_pm)));
+
+        // Arch Linux: fall back to common AUR helpers when pacman doesn't have the package
+        if os_str == "arch" {
+            candidates.push(("yay", false));
+            candidates.push(("paru", false));
         }
     }
 
-    if resolved.is_none() {
-        for pm in &config.install.package_managers {
-            if let Some(cmd) = instructions.get_command(pm) {
-                resolved = Some((cmd.clone(), is_system_installer(pm)));
-                break;
-            }
+    for pm in &config.install.package_managers {
+        candidates.push((pm.as_str(), is_system_installer(pm)));
+    }
+
+    for (pm, is_sys) in candidates {
+        if let Some(cmd) = instructions.get_command(pm) {
+            return Some(if is_sys && !is_root_user() {
+                format!("sudo {}", cmd)
+            } else {
+                cmd.clone()
+            });
         }
     }
 
-    if let Some((cmd, is_sys)) = resolved {
-        if is_sys && !is_root_user() {
-            Some(format!("sudo {}", cmd))
-        } else {
-            Some(cmd)
-        }
-    } else {
-        None
-    }
+    None
 }
 
 #[cfg(unix)]
@@ -245,5 +251,40 @@ mod tests {
         config.install.os = Some("macos".to_string());
         let cmd_brew = resolve_install_command(&contract, &config).unwrap();
         assert_eq!(cmd_brew, "brew install test");
+    }
+
+    #[test]
+    fn test_resolve_install_command_arch_aur_fallback() {
+        use std::collections::HashMap;
+
+        // Package only has yay/paru, not pacman
+        let mut others = HashMap::new();
+        others.insert("yay".to_string(), "yay -S python-pytube".to_string());
+        others.insert("paru".to_string(), "paru -S python-pytube".to_string());
+
+        let contract = AciCommandContract {
+            app_id: "test".to_string(),
+            name: "python-pytube".to_string(),
+            cmd_path: "pytube".to_string(),
+            node_type: cmdhub_shared::NodeType::Root,
+            description: "test".to_string(),
+            risk_level: cmdhub_shared::RiskLevel::Safe,
+            example_template: None,
+            os_aliases: None,
+            install_instructions: Some(InstallInstructions {
+                others,
+                ..Default::default()
+            }),
+            docker_image: None,
+            script_url: None,
+            source_url: None,
+        };
+
+        let mut config = Config::default();
+        config.install.os = Some("arch".to_string());
+
+        // On arch, should fall back to yay when pacman not present
+        let cmd = resolve_install_command(&contract, &config);
+        assert_eq!(cmd, Some("yay -S python-pytube".to_string()));
     }
 }
