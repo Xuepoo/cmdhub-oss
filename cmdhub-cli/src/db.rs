@@ -208,15 +208,16 @@ pub fn search_cascading(
         }
     }
 
-    // 3. Stage 1 App Filter: Get top 3 app_ids
-    // Stage 1: select top 3 app_ids via RRF, with source priority multiplier and name dedup.
+    // Stage 1: select top 5 app_ids via RRF, with source priority multiplier and name dedup.
     // Priority: official (com.github/com.gitlab) 1.5x > distro (org.archlinux) 1.0x > tldr 0.7x.
     // Within same tool name, only the highest-scoring source is retained.
+    // BM25 weights: cmd_path=0 (unindexed), name=5.0, capabilities=2.0.
+    // Raising capabilities weight helps description-based queries (e.g. "knowledge" → obsidian).
     let mut top_apps = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
             "WITH fts_matched AS ( \
-                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC) as fts_pos \
                 FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
             ), \
             fts_ordered AS ( \
@@ -254,7 +255,7 @@ pub fn search_cascading(
                        row_number() OVER (PARTITION BY a.name ORDER BY s.rrf_score DESC) as rn \
                 FROM scored s JOIN apps a ON s.app_id = a.app_id \
             ) \
-            SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 3"
+            SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 5"
         )?;
 
         let app_rows = app_stmt.query_map(
@@ -271,7 +272,7 @@ pub fn search_cascading(
     } else {
         let mut app_stmt = conn.prepare(
             "WITH fts_matched AS ( \
-                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC) as fts_pos \
                 FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
             ), \
             fts_ordered AS ( \
@@ -292,7 +293,7 @@ pub fn search_cascading(
                        row_number() OVER (PARTITION BY a.name ORDER BY s.rrf_score DESC) as rn \
                 FROM scored s JOIN apps a ON s.app_id = a.app_id \
             ) \
-            SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 3"
+            SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 5"
         )?;
 
         let app_rows = app_stmt.query_map(
@@ -311,8 +312,33 @@ pub fn search_cascading(
         return Ok(exact_results);
     }
 
-    // Pad top_apps to length 3
-    while top_apps.len() < 3 {
+    // Guarantee: any app that has an FTS5 text match must appear in top_apps.
+    // The combined RRF can push a weak FTS5 match (e.g. obsidian for "knowledge")
+    // below the top-5 cutoff when vector-boosted github apps dominate.
+    // Fix: collect all FTS5-matching app_ids and inject any that are missing.
+    if processed_query != "*" {
+        let mut fts_only_stmt = conn.prepare(
+            "WITH fts_matched AS ( \
+                SELECT cmd_path FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
+            ) \
+            SELECT DISTINCT arg.app_id \
+            FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+            LIMIT 5"
+        )?;
+        let fts_app_rows = fts_only_stmt.query_map(
+            rusqlite::named_params! { ":query": &processed_query },
+            |row| row.get::<_, String>(0),
+        )?;
+        for app_id in fts_app_rows.flatten() {
+            if !top_apps.contains(&app_id) {
+                top_apps.push(app_id);
+            }
+        }
+        top_apps.truncate(8); // cap at 8 to keep Stage 2 bounded
+    }
+
+    // Pad top_apps to length 8 for Stage 2 named params
+    while top_apps.len() < 8 {
         top_apps.push(top_apps[0].clone());
     }
 
@@ -348,7 +374,7 @@ pub fn search_cascading(
             LEFT JOIN fts_rank fts ON arg.cmd_path = fts.cmd_path \
             LEFT JOIN vec_rank vec ON arg.cmd_path = vec.cmd_path \
             WHERE (fts.cmd_path IS NOT NULL OR vec.cmd_path IS NOT NULL) \
-              AND arg.app_id IN (:app1, :app2, :app3) \
+              AND arg.app_id IN (:app1, :app2, :app3, :app4, :app5, :app6, :app7, :app8) \
             ORDER BY COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) DESC \
             LIMIT :limit_num"
         )?;
@@ -360,6 +386,11 @@ pub fn search_cascading(
                 ":app1": &top_apps[0],
                 ":app2": &top_apps[1],
                 ":app3": &top_apps[2],
+                ":app4": &top_apps[3],
+                ":app5": &top_apps[4],
+                ":app6": &top_apps[5],
+                ":app7": &top_apps[6],
+                ":app8": &top_apps[7],
                 ":limit_num": limit,
             },
             |row| {
@@ -405,8 +436,8 @@ pub fn search_cascading(
             JOIN apps app ON arg.app_id = app.app_id \
             JOIN apps_fts fts ON arg.cmd_path = fts.cmd_path \
             WHERE apps_fts MATCH :query \
-              AND arg.app_id IN (:app1, :app2, :app3) \
-            ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC \
+              AND arg.app_id IN (:app1, :app2, :app3, :app4, :app5, :app6, :app7, :app8) \
+            ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC \
             LIMIT :limit_num",
         )?;
 
@@ -416,6 +447,11 @@ pub fn search_cascading(
                 ":app1": &top_apps[0],
                 ":app2": &top_apps[1],
                 ":app3": &top_apps[2],
+                ":app4": &top_apps[3],
+                ":app5": &top_apps[4],
+                ":app6": &top_apps[5],
+                ":app7": &top_apps[6],
+                ":app8": &top_apps[7],
                 ":limit_num": limit,
             },
             |row| {
