@@ -310,13 +310,13 @@ def build(
     conn = _init_db(output_path)
 
     def strip_json_nulls(s: str | None) -> str | None:
-        """Remove null-valued keys from JSON string so Rust serde can parse it."""
+        """Remove null/empty-valued keys from JSON string so Rust serde can parse it."""
         if not s:
             return s
         try:
             obj = json.loads(s)
             if isinstance(obj, dict):
-                cleaned = {k: v for k, v in obj.items() if v is not None}
+                cleaned = {k: v for k, v in obj.items() if v is not None and v != ""}
                 return json.dumps(cleaned) if cleaned else None
         except Exception:
             pass
@@ -345,7 +345,9 @@ def build(
             " example_template,docker_image,script_url,source_url) VALUES (?,?,?,?,?,?,?,?,?,?)",
             [
                 (
-                    a["cmd_path"], a["app_id"], a["node_name"], a["node_type"],
+                    a["cmd_path"], a["app_id"], a["node_name"],
+                    # Enforce structural invariant from cmd_path shape
+                    "root" if "." not in a["cmd_path"] else "sub",
                     a["description"], a["risk_level"], a.get("example_template"),
                     a.get("docker_image"), a.get("script_url"), a.get("source_url"),
                 )
