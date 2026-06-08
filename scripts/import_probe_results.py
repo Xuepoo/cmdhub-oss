@@ -95,9 +95,16 @@ def _build_install_instructions(source: str, pkg: str) -> str | None:
 
 
 def _app_id(source: str, pkg: str, binary: str) -> str:
-    """Generate a stable app_id."""
+    """Generate a stable app_id.
+
+    For scoped npm packages like @scope/name, use 'scope-name' to avoid collisions
+    when multiple packages share the same leaf name (e.g. @angular/cli and @railway/cli).
+    """
     prefix = _SOURCE_MAP.get(source, f"unknown.{source}")
-    safe = re.sub(r"[^a-zA-Z0-9._-]", "-", pkg.lstrip("@").split("/")[-1].split("[")[0])
+    # Normalize: strip leading @, replace / and other non-safe chars with -
+    normalized = pkg.lstrip("@").split("[")[0]          # drop extras/versions
+    safe = re.sub(r"[^a-zA-Z0-9._-]", "-", normalized)  # @ already stripped, / → -
+    safe = re.sub(r"-+", "-", safe).strip("-")           # collapse duplicate dashes
     return f"{prefix}.{safe}"
 
 
