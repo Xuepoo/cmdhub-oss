@@ -68,6 +68,9 @@ VALID_INSTALL_KEYS = {
     "pacman", "yay", "paru", "brew", "apt", "apt-get", "dnf", "zypper",
     "snap", "flatpak", "scoop", "winget", "cargo", "npm", "pip", "go",
     "curl", "wget", "docker", "nix",
+    # Modern alternatives
+    "uv", "pipx", "nix-env", "nix_env", "choco", "chocolatey", "apk",
+    "emerge", "pkg", "xbps", "guix", "conda", "mamba",
 }
 
 # Descriptions that are clearly bad (placeholder / too generic)
