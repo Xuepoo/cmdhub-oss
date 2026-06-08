@@ -324,6 +324,20 @@ def build(
 
     app_name_map = {a["app_id"]: a["name"] for a in apps}
 
+    def _fts_name(app_id: str, binary_name: str) -> str:
+        """Return FTS name field: 'binary_name pkg_alias' when they differ.
+
+        For arch packages: 'org.archlinux.antigravity-cli' → pkg alias 'antigravity-cli'.
+        If pkg alias == binary name, just return the binary name (no duplication).
+        """
+        parts = app_id.rsplit(".", 1)
+        if len(parts) != 2:
+            return binary_name
+        pkg_alias = parts[1]
+        if pkg_alias == binary_name or pkg_alias in binary_name:
+            return binary_name
+        return f"{binary_name} {pkg_alias}"
+
     conn.executemany(
         "INSERT OR REPLACE INTO apps VALUES (?,?,?,?)",
         [
@@ -360,7 +374,9 @@ def build(
         )
         conn.executemany(
             "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?,?,?)",
-            [(a["cmd_path"], app_name_map.get(a["app_id"], a["app_id"]), a["description"])
+            [(a["cmd_path"],
+              _fts_name(a["app_id"], app_name_map.get(a["app_id"], a["app_id"])),
+              a["description"])
              for a in batch],
         )
         conn.executemany(
