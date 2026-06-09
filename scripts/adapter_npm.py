@@ -19,6 +19,19 @@ from pathlib import Path
 import requests
 
 
+def _has_bin(s: requests.Session, name: str, proxies: dict) -> bool:
+    """True if the npm package exposes a CLI bin (filters out libraries like ansi-styles)."""
+    try:
+        r = s.get(f"https://registry.npmjs.org/{name}", proxies=proxies, timeout=10)
+        if r.status_code != 200:
+            return False
+        d = r.json()
+        latest = d.get("dist-tags", {}).get("latest")
+        return bool(d.get("versions", {}).get(latest, {}).get("bin")) if latest else False
+    except Exception:
+        return False
+
+
 def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
     proxies = {"https": proxy, "http": proxy} if proxy else {}
     s = requests.Session()
@@ -47,13 +60,15 @@ def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
         objs = r.json().get("objects", [])
         if not objs:
             break
-        before = len(records)
+        before = len(seen)  # track unique names seen, not records (bin-check filters records)
         for o in objs:
             pkg = o.get("package", {})
             name = pkg.get("name")
             if not name or name in seen:
                 continue
             seen.add(name)
+            if not _has_bin(s, name, proxies):  # keep only real CLIs, not libraries
+                continue
             desc = (pkg.get("description") or "").strip()
             records.append({
                 "app_id": f"com.npmjs.{name.lstrip('@').replace('/', '-')}",
@@ -63,8 +78,8 @@ def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
                 "install_instructions": {"npm": f"npm install -g {name}"},
                 "source": "npm",
             })
-        stale = stale + 1 if len(records) == before else 0
-        print(f"[npm] from={frm}: total {len(records)}", flush=True)
+        stale = stale + 1 if len(seen) == before else 0
+        print(f"[npm] from={frm}: seen {len(seen)}, cli {len(records)}", flush=True)
         frm += SIZE
         time.sleep(0.5)
 
