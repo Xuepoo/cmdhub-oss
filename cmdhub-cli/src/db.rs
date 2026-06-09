@@ -56,6 +56,25 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Domain concept → concrete terms the tools actually use. Bridges abstract
+/// natural-language queries to real command names (cloud CLIs say "vpc"/"subnet",
+/// not "networking"). Only applied to the OR-fallback query, so it never breaks
+/// precise AND matches — it just widens recall for vague intent queries.
+fn concept_synonyms(token: &str) -> &'static [&'static str] {
+    match token {
+        "networking" | "network" => &["vpc", "subnet", "gateway", "route", "firewall"],
+        "firewall" => &["security", "firewall", "acl"],
+        "storage" => &["bucket", "volume", "disk", "blob"],
+        "database" | "db" => &["database", "sql", "table", "rds"],
+        "serverless" => &["lambda", "function", "faas"],
+        "container" | "containers" => &["container", "image", "pod"],
+        "kubernetes" | "k8s" => &["pod", "deployment", "namespace", "cluster"],
+        "secret" | "secrets" => &["secret", "credential", "key", "vault"],
+        "dns" => &["dns", "domain", "record", "zone"],
+        _ => &[],
+    }
+}
+
 fn preprocess_query(query: &str, use_and: bool) -> String {
     let stop_words: std::collections::HashSet<&str> = [
         "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by", "and",
@@ -65,20 +84,35 @@ fn preprocess_query(query: &str, use_and: bool) -> String {
     .cloned()
     .collect();
 
-    let words: Vec<String> = query
+    let base: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| !w.is_empty())
         .map(|w| w.to_lowercase())
         .filter(|w| !stop_words.contains(w.as_str()))
-        .map(|w| format!("{}*", w))
         .collect();
 
-    if words.is_empty() {
+    let mut terms: Vec<String> = base.iter().map(|w| format!("{}*", w)).collect();
+
+    // OR-query only: widen with domain synonyms so e.g. "configure networking" also
+    // matches vpc/subnet/gateway commands. AND-query stays strict (exact intent).
+    if !use_and {
+        let mut seen: std::collections::HashSet<String> =
+            base.iter().cloned().collect();
+        for w in &base {
+            for syn in concept_synonyms(w) {
+                if seen.insert((*syn).to_string()) {
+                    terms.push(format!("{}*", syn));
+                }
+            }
+        }
+    }
+
+    if terms.is_empty() {
         "*".to_string()
     } else if use_and {
-        words.join(" ")
+        terms.join(" ")
     } else {
-        words.join(" OR ")
+        terms.join(" OR ")
     }
 }
 
