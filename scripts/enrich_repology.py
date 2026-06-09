@@ -225,6 +225,7 @@ def enrich_db(db_path: str, rate: float, dry_run: bool, proxy: str, null_only: b
             FROM apps
             WHERE json_extract(install_instructions, '$.brew') IS NOT NULL
                OR json_extract(install_instructions, '$.apt') IS NOT NULL
+               OR json_extract(install_instructions, '$.pacman') IS NOT NULL
             GROUP BY name
             ORDER BY name
         """).fetchall()
