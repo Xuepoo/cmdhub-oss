@@ -145,24 +145,28 @@ def _name_score(pkg_name: str, project_name: str) -> int:
 
 
 def query_repology(session: requests.Session, project_name: str, proxies: dict) -> dict[str, str]:
-    """Query Repology for a project and return {pm_key: install_cmd}."""
-    url = f"https://repology.org/api/v1/projects/?search={project_name}"
-    try:
-        r = session.get(url, proxies=proxies, timeout=15)
-        r.raise_for_status()
-    except Exception as e:
-        print(f"  [warn] Repology error for {project_name!r}: {e}", file=sys.stderr)
-        return {}
+    """Query Repology for a project and return {pm_key: install_cmd}.
 
-    data: dict[str, list] = r.json()
-
-    # Find exact project match (case-insensitive fallback)
-    packages: list[dict] = data.get(project_name, [])
-    if not packages:
-        for key, pkgs in data.items():
-            if key.lower() == project_name.lower():
-                packages = pkgs
-                break
+    Uses the exact-project endpoint /api/v1/project/<name> (returns a flat package
+    list across all repos) — far more reliable than the ?search= range endpoint.
+    Retries on 429 (Repology rate-limits aggressively).
+    """
+    url = f"https://repology.org/api/v1/project/{project_name.lower()}"
+    packages: list[dict] = []
+    for attempt in range(4):
+        try:
+            r = session.get(url, proxies=proxies, timeout=15)
+            if r.status_code == 429:
+                time.sleep(3 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            packages = r.json()
+            break
+        except Exception as e:
+            if attempt == 3:
+                print(f"  [warn] Repology error for {project_name!r}: {e}", file=sys.stderr)
+            else:
+                time.sleep(2 * (attempt + 1))
 
     if not packages:
         return {}
@@ -179,31 +183,51 @@ def query_repology(session: requests.Session, project_name: str, proxies: dict) 
         score = _name_score(pkg, project_name)
         pm_candidates.setdefault(pm_key, []).append((score, _build_install_cmd(pm_key, pkg)))
 
-    # Pick highest-scored candidate per PM
+    # Pick highest-scored candidate per PM, but only if the name match is confident.
+    # A low score means the Repology project that matched our name is probably a
+    # different, same-named tool (the classic "lighthouse" collision) — skip it.
     pm_cmds: dict[str, str] = {}
     for pm_key, candidates in pm_candidates.items():
         best_score, best_cmd = max(candidates, key=lambda x: x[0])
+        if best_score < _MIN_MATCH_SCORE:
+            continue
         pm_cmds[pm_key] = best_cmd
 
     return pm_cmds
 
 
-def enrich_db(db_path: str, rate: float, dry_run: bool, proxy: str) -> None:
+# Minimum name-match confidence to accept a Repology package (see _name_score).
+# 60 = "project name is a clean substring with no lib/debug/doc/git noise".
+_MIN_MATCH_SCORE = 60
+
+
+def enrich_db(db_path: str, rate: float, dry_run: bool, proxy: str, null_only: bool = False) -> None:
     proxies = {"https": proxy, "http": proxy} if proxy else {}
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    # Target: apps with brew OR apt already set (cross-platform tools)
-    rows = conn.execute("""
-        SELECT DISTINCT name, GROUP_CONCAT(app_id) as app_ids,
-               MAX(install_instructions) as install_instructions
-        FROM apps
-        WHERE json_extract(install_instructions, '$.brew') IS NOT NULL
-           OR json_extract(install_instructions, '$.apt') IS NOT NULL
-        GROUP BY name
-        ORDER BY name
-    """).fetchall()
+    # Targets:
+    #   default        — tool names that already have brew/apt (cross-platform; fill other distros)
+    #   --null-only    — tool names where NO app has any install yet (coverage gap, e.g. tuxi in AUR)
+    if null_only:
+        rows = conn.execute("""
+            SELECT name, MAX(install_instructions) as install_instructions
+            FROM apps
+            GROUP BY name
+            HAVING MAX(install_instructions) IS NULL OR length(MAX(install_instructions)) <= 2
+            ORDER BY name
+        """).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT DISTINCT name, GROUP_CONCAT(app_id) as app_ids,
+                   MAX(install_instructions) as install_instructions
+            FROM apps
+            WHERE json_extract(install_instructions, '$.brew') IS NOT NULL
+               OR json_extract(install_instructions, '$.apt') IS NOT NULL
+            GROUP BY name
+            ORDER BY name
+        """).fetchall()
 
     total = len(rows)
     print(f"[repology] {total} distinct tool names to enrich", flush=True)
@@ -281,6 +305,8 @@ def main() -> None:
     ap.add_argument("--db", default=str(Path.home() / ".local/share/cmdhub/cmdhub.db"))
     ap.add_argument("--rate", type=float, default=1.1, help="Seconds between requests (default 1.1)")
     ap.add_argument("--dry-run", action="store_true", help="Don't write to DB")
+    ap.add_argument("--null-only", action="store_true",
+                    help="Only fill tool names that currently have NO install at all (coverage gap)")
     ap.add_argument("--proxy", default="http://127.0.0.1:1080")
     args = ap.parse_args()
 
@@ -288,7 +314,7 @@ def main() -> None:
         print(f"[error] DB not found: {args.db}", file=sys.stderr)
         sys.exit(1)
 
-    enrich_db(args.db, args.rate, args.dry_run, args.proxy)
+    enrich_db(args.db, args.rate, args.dry_run, args.proxy, args.null_only)
 
 
 if __name__ == "__main__":
