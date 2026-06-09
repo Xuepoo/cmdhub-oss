@@ -46,6 +46,11 @@ CURATED_INSTALL: dict[str, dict[str, str]] = {
     "firebase":  {"npm": "firebase-tools"},
     "doctl":     {"pacman": "doctl", "brew": "doctl", "snap": "doctl"},
     "flyctl":    {"brew": "flyctl"},
+    "oci":       {"pip": "oci-cli", "brew": "oci-cli"},
+    "tofu":      {"pacman": "opentofu", "brew": "opentofu", "scoop": "opentofu"},
+    "aliyun":    {"brew": "aliyun-cli", "yay": "aliyun-cli-bin"},
+    "tccli":     {"pip": "tccli"},
+    "openstack": {"pip": "python-openstackclient", "pacman": "python-openstackclient"},
 }
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]|\x1b\([AB]")

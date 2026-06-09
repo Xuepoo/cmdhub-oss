@@ -72,8 +72,29 @@ pub fn resolve_install_command(contract: &AciCommandContract, config: &Config) -
         }
     }
 
+    // Last resort: the tool may only ship via a manager the user didn't configure
+    // (e.g. oci-cli is pip-only). Returning *some* working install command beats null.
+    for pm in FALLBACK_PMS {
+        if let Some(raw) = instructions.get_command(pm) {
+            let cmd = normalize_install_cmd(pm, raw);
+            return Some(if is_system_installer(pm) && !is_root_user() {
+                format!("sudo {}", cmd)
+            } else {
+                cmd
+            });
+        }
+    }
+
     None
 }
+
+/// Global fallback order when none of the user's configured/system managers have an
+/// entry — prefer cross-platform/language managers, then common system ones.
+const FALLBACK_PMS: &[&str] = &[
+    "brew", "pip", "pipx", "uv", "npm", "cargo", "go",
+    "pacman", "apt", "dnf", "zypper", "apk", "snap", "flatpak",
+    "scoop", "choco", "winget", "nix-env", "yay", "paru",
+];
 
 fn normalize_install_cmd(pm: &str, raw: &str) -> String {
     // If the stored value already looks like a full command (contains spaces or PM keyword), use as-is

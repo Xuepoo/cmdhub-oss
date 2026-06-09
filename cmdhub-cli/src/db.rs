@@ -118,6 +118,21 @@ pub fn search_cascading(
         }
     }
 
+    // Whether the OR-query matches any FTS doc. A verbose natural-language query
+    // ("I want to know how to configure networking using AWS") rarely AND-matches and
+    // its embedding can sit just past the vector threshold — but it still keyword-matches
+    // ("aws", "networking"). We must not bail out to empty results in that case.
+    let mut or_match = false;
+    if or_query != "*" {
+        if let Ok(count) = conn.query_row::<u64, _, _>(
+            "SELECT count(*) FROM apps_fts WHERE apps_fts MATCH :query",
+            rusqlite::named_params! { ":query": &or_query },
+            |row| row.get(0),
+        ) {
+            or_match = count > 0;
+        }
+    }
+
     let processed_query = if and_match {
         and_query.clone()
     } else {
@@ -203,7 +218,10 @@ pub fn search_cascading(
 
         let is_test =
             std::env::var("CMDH_TEST").is_ok() || std::env::var("CARGO_MANIFEST_DIR").is_ok();
-        if !is_test && lowest_dist > 1.14 && !and_match {
+        // Only bail to exact-only results when the query is genuinely unmatched: far in
+        // vector space AND no keyword match of any kind. If FTS matches (and/or), proceed
+        // to hybrid ranking so verbose intent queries still resolve to a subcommand.
+        if !is_test && lowest_dist > 1.14 && !and_match && !or_match {
             return Ok(exact_results);
         }
     }

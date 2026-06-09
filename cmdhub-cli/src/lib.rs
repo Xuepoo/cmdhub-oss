@@ -34,7 +34,7 @@ pub enum Commands {
         /// The query string to search for
         query: String,
         /// Maximum number of search results to return
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 5)]
         limit: usize,
         /// Force full preset output format
         #[arg(short, long, group = "output_format")]
