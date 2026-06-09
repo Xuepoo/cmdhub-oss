@@ -242,8 +242,8 @@ def _init_db(path: str) -> sqlite3.Connection:
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-_NOISE_LEAVES = {"help", "version", "completion", "bash", "zsh", "fish",
-                 "powershell", "--help", "-h", "--version"}
+_NOISE_LEAVES = {"help", "version", "completion", "completions", "bash", "zsh",
+                 "fish", "powershell", "--help", "-h", "--version"}
 
 
 def _is_noise_command(cmd_path: str) -> bool:
@@ -254,8 +254,8 @@ def _is_noise_command(cmd_path: str) -> bool:
     leaf = parts[-1].lower()
     if leaf in _NOISE_LEAVES:
         return True
-    # shell-completion subtrees: anything under a `.completion.` path
-    return "completion" in parts[1:]
+    # shell-completion subtrees: anything under a `.completion(s).` path
+    return "completion" in parts[1:] or "completions" in parts[1:]
 
 
 def _embed_text(arg: dict) -> str:
