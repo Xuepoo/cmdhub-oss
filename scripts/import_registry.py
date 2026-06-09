@@ -46,6 +46,10 @@ def import_records(db_path: Path, record_files: list[Path]) -> None:
                 continue
             app_id = r["app_id"]
             install = json.dumps(r["install_instructions"], ensure_ascii=False)
+            desc = (r.get("description") or "").strip()
+            if len(desc) < 5:  # some registry entries have terse/empty descriptions
+                desc = f"{name} — command-line tool"
+            r["description"] = desc
             conn.execute(
                 "INSERT OR IGNORE INTO apps (app_id, name, install_instructions) VALUES (?,?,?)",
                 (app_id, name, install),
