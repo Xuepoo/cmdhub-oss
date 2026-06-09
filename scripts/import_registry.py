@@ -44,6 +44,12 @@ def import_records(db_path: Path, record_files: list[Path]) -> None:
             if cmd in existing_cmd or cmd in seen_new or name in covered_names:
                 skipped += 1
                 continue
+            # Drop AUR -bin duplicates when the base package is already present.
+            if name.endswith("-bin"):
+                base = name[:-4]
+                if (base in covered_names or base in existing_cmd or base in seen_new):
+                    skipped += 1
+                    continue
             app_id = r["app_id"]
             install = json.dumps(r["install_instructions"], ensure_ascii=False)
             desc = (r.get("description") or "").strip()
