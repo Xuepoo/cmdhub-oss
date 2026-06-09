@@ -88,13 +88,11 @@ pub fn resolve_install_command(contract: &AciCommandContract, config: &Config) -
     None
 }
 
-/// Global fallback order when none of the user's configured/system managers have an
-/// entry — prefer cross-platform/language managers, then common system ones.
-const FALLBACK_PMS: &[&str] = &[
-    "brew", "pip", "pipx", "uv", "npm", "cargo", "go",
-    "pacman", "apt", "dnf", "zypper", "apk", "snap", "flatpak",
-    "scoop", "choco", "winget", "nix-env", "yay", "paru",
-];
+/// Fallback when none of the user's configured/system managers have an entry.
+/// ONLY cross-platform/language managers — never another OS's system manager, so a
+/// Debian user is never told to `yay -S` (Arch-only) an AUR package. If a tool has
+/// no language-PM install for the user's platform, returning None is correct.
+const FALLBACK_PMS: &[&str] = &["cargo", "pip", "pipx", "uv", "npm", "go", "brew"];
 
 fn normalize_install_cmd(pm: &str, raw: &str) -> String {
     // If the stored value already looks like a full command (contains spaces or PM keyword), use as-is
