@@ -360,7 +360,10 @@ pub fn search_cascading(
         top_apps.push(top_apps[0].clone());
     }
 
-    // Stage 2: Scoped search
+    // Stage 2: Scoped search.
+    // Over-fetch a candidate pool so the leaf-match re-ranker (below) has room to
+    // promote the command whose name most precisely matches the query intent.
+    let pool = std::cmp::max(limit, 30);
     let mut results = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut stmt = conn.prepare(
@@ -409,7 +412,7 @@ pub fn search_cascading(
                 ":app6": &top_apps[5],
                 ":app7": &top_apps[6],
                 ":app8": &top_apps[7],
-                ":limit_num": limit,
+                ":limit_num": pool,
             },
             |row| {
                 Ok(DbAciRecord {
@@ -470,7 +473,7 @@ pub fn search_cascading(
                 ":app6": &top_apps[5],
                 ":app7": &top_apps[6],
                 ":app8": &top_apps[7],
-                ":limit_num": limit,
+                ":limit_num": pool,
             },
             |row| {
                 Ok(DbAciRecord {
@@ -498,6 +501,28 @@ pub fn search_cascading(
         }
     }
 
+    // Path-match re-rank: blend the hybrid-RRF order with how precisely each command's
+    // path (service + leaf, e.g. "ec2 create-vpc") matches the query intent. This lifts
+    // `aws.ec2.create-vpc` above `aws.apigatewayv2.create-vpc-link` for "create a vpc on
+    // aws", and keeps the named service (ec2) in play — without discarding semantic
+    // (vector) ranking, since the RRF position still contributes.
+    let q_tokens = content_tokens(query);
+    if !q_tokens.is_empty() && results.len() > 1 {
+        let n = results.len() as i32;
+        let mut scored: Vec<(i32, usize, AciCommandContract)> = results
+            .drain(..)
+            .enumerate()
+            .map(|(i, c)| {
+                let rrf = n - i as i32; // higher = better original rank
+                let composite = rrf + 4 * path_match_score(&c.cmd_path, &q_tokens);
+                (composite, i, c)
+            })
+            .collect();
+        // Sort by composite desc; original position as stable tiebreaker.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        results = scored.into_iter().map(|(_, _, c)| c).collect();
+    }
+
     let mut final_results = exact_results.clone();
     final_results.append(&mut results);
 
@@ -508,7 +533,46 @@ pub fn search_cascading(
     let mut seen_paths = std::collections::HashSet::new();
     final_results.retain(|r| seen_paths.insert(r.cmd_path.clone()));
 
+    final_results.truncate(limit);
     Ok(final_results)
+}
+
+/// Lowercased content tokens of a query (alphanumerics, stop-words removed).
+fn content_tokens(query: &str) -> std::collections::HashSet<String> {
+    let stop: std::collections::HashSet<&str> = [
+        "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by",
+        "and", "or", "from", "my", "your", "our", "me", "us", "i", "want", "know", "using",
+        "use", "do", "can", "get", "please", "help",
+    ]
+    .iter()
+    .cloned()
+    .collect();
+    query
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .filter(|w| !stop.contains(w.as_str()))
+        .collect()
+}
+
+/// Score how well a command's path (service + leaf, excluding the binary) matches the
+/// query intent: reward overlap with query tokens, lightly penalise extra path tokens.
+/// e.g. for query {create,vpc,aws}: "aws.ec2.create-vpc" → ec2/create/vpc overlap 2,
+/// extra 1 (ec2) → 5; "aws.apigatewayv2.create-vpc-link" → overlap 2, extra 2 → 4.
+fn path_match_score(cmd_path: &str, q_tokens: &std::collections::HashSet<String>) -> i32 {
+    // Drop the first segment (the binary, e.g. "aws") — it's already how we got here.
+    let after_binary = cmd_path.splitn(2, '.').nth(1).unwrap_or(cmd_path);
+    let tokens: Vec<String> = after_binary
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect();
+    if tokens.is_empty() {
+        return 0;
+    }
+    let overlap = tokens.iter().filter(|t| q_tokens.contains(*t)).count() as i32;
+    let extra = tokens.len() as i32 - overlap;
+    3 * overlap - extra
 }
 
 pub fn search_commands(
