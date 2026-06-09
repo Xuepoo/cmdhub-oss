@@ -150,8 +150,22 @@ def _extract_description(text: str, max_chars: int = 300) -> str:
     return desc[:max_chars] if desc else ""
 
 
+# Xuepoo's own tools get GitHub-namespaced app_ids (repo, which may differ from the binary).
+_XUEPOO_APPID: dict[str, str] = {
+    "vectomancy":           "com.github.xuepoo.vectomancy",
+    "sonic-bridge":         "com.github.xuepoo.sonic-bridge",
+    "waywarp":              "com.github.xuepoo.waywarp",
+    "alx":                  "com.github.xuepoo.agent-lx-music",
+    "agent-book-translate": "com.github.xuepoo.agent-book-translate",
+    "cmdh":                 "com.github.xuepoo.cmdhub",
+    "cmdhub-mcp":           "com.github.xuepoo.cmdhub-mcp",
+}
+
+
 def _canonical_app_id(conn: sqlite3.Connection, tool: str) -> str:
     """The existing app for this tool that owns the most commands, else org.cmdhub.<tool>."""
+    if tool in _XUEPOO_APPID:
+        return _XUEPOO_APPID[tool]
     row = conn.execute(
         "SELECT app_id FROM apps WHERE name = ? "
         "ORDER BY (SELECT COUNT(*) FROM arguments WHERE arguments.app_id = apps.app_id) DESC "
