@@ -51,6 +51,21 @@ CURATED_INSTALL: dict[str, dict[str, str]] = {
     "aliyun":    {"brew": "aliyun-cli", "yay": "aliyun-cli-bin"},
     "tccli":     {"pip": "tccli"},
     "openstack": {"pip": "python-openstackclient", "pacman": "python-openstackclient"},
+    # Xuepoo's own open-source CLIs — published to crates.io (cargo, all distros),
+    # the AUR (yay/paru on Arch), a personal Homebrew tap, and a Scoop bucket. On
+    # Debian/Fedora/macOS with no native package the resolver falls back to cargo.
+    "vectomancy":          {"cargo": "vectomancy", "yay": "vectomancy", "paru": "vectomancy",
+                            "brew": "xuepoo/tap/vectomancy", "scoop": "xuepoo/vectomancy"},
+    "sonic-bridge":        {"cargo": "sonic-bridge", "yay": "sonic-bridge", "paru": "sonic-bridge",
+                            "brew": "xuepoo/tap/sonic-bridge", "scoop": "xuepoo/sonic-bridge"},
+    "waywarp":             {"cargo": "waywarp", "yay": "waywarp", "paru": "waywarp",
+                            "brew": "xuepoo/tap/waywarp", "scoop": "xuepoo/waywarp"},
+    "alx":                 {"cargo": "agent-lx-music", "yay": "agent-lx-music", "paru": "agent-lx-music",
+                            "brew": "xuepoo/tap/agent-lx-music", "scoop": "xuepoo/agent-lx-music"},
+    "agent-book-translate":{"cargo": "agent-book-translate", "yay": "agent-book-translate", "paru": "agent-book-translate",
+                            "brew": "xuepoo/tap/agent-book-translate", "scoop": "xuepoo/agent-book-translate"},
+    "cmdh":                {"brew": "xuepoo/tap/cmdhub", "scoop": "xuepoo/cmdhub"},
+    "cmdhub-mcp":          {"brew": "xuepoo/tap/cmdhub", "scoop": "xuepoo/cmdhub"},
 }
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]|\x1b\([AB]")
