@@ -24,7 +24,8 @@ import requests
 _SKIP = re.compile(
     r"(^lib32-|^lib\d|-dkms$|-dbg$|-debug$|-git$|-svn$|-hg$|-bzr$"
     r"|^ttf-|^otf-|-fonts?$|-theme$|-themes$|-icon-theme$|-icons$|-cursor-theme$"
-    r"|-wallpapers?$|-gtk-theme$|-kde-theme$|-cursors$|-sounds?$|-emoji)",
+    r"|-wallpapers?$|-gtk-theme$|-kde-theme$|-cursors$|-sounds?$|-emoji"
+    r"|-i18n-|-l10n-|-lang-|-translation|-locale)",
     re.IGNORECASE,
 )
 
