@@ -28,7 +28,8 @@ def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
     records: list[dict] = []
     frm = 0
     SIZE = 250
-    while len(records) < max_pkgs:
+    stale = 0  # consecutive pages that added no new package (npm returns dups past its cap)
+    while len(records) < max_pkgs and frm <= 12000 and stale < 3:
         url = f"https://registry.npmjs.org/-/v1/search?text=keywords:cli&size={SIZE}&from={frm}"
         for attempt in range(4):
             try:
@@ -46,6 +47,7 @@ def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
         objs = r.json().get("objects", [])
         if not objs:
             break
+        before = len(records)
         for o in objs:
             pkg = o.get("package", {})
             name = pkg.get("name")
@@ -61,6 +63,7 @@ def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
                 "install_instructions": {"npm": f"npm install -g {name}"},
                 "source": "npm",
             })
+        stale = stale + 1 if len(records) == before else 0
         print(f"[npm] from={frm}: total {len(records)}", flush=True)
         frm += SIZE
         time.sleep(0.5)
