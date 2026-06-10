@@ -30,6 +30,8 @@ def export(db_path: Path, out_path: Path) -> None:
         for r in conn.execute("SELECT app_id, name, os_aliases, install_instructions FROM apps")
     ]
 
+    has_topics = any(c[1] == "topics" for c in conn.execute("PRAGMA table_info(arguments)"))
+    topics_sel = "topics" if has_topics else "NULL AS topics"
     arguments = [
         {
             "cmd_path": r["cmd_path"],
@@ -42,10 +44,11 @@ def export(db_path: Path, out_path: Path) -> None:
             "docker_image": r["docker_image"],
             "script_url": r["script_url"],
             "source_url": r["source_url"],
+            "topics": r["topics"],
         }
         for r in conn.execute(
             "SELECT cmd_path, app_id, node_name, node_type, description, risk_level, "
-            "example_template, docker_image, script_url, source_url FROM arguments"
+            f"example_template, docker_image, script_url, source_url, {topics_sel} FROM arguments"
         )
     ]
     conn.close()

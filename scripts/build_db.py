@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS arguments (
     docker_image TEXT,
     script_url TEXT,
     source_url TEXT,
+    topics TEXT,
     FOREIGN KEY(app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
@@ -267,7 +268,8 @@ def _embed_text(arg: dict) -> str:
     """
     path_words = arg["cmd_path"].replace(".", " ").replace("-", " ")
     desc = arg.get("description") or ""
-    return f"{path_words}. {desc}".strip()
+    topics = arg.get("topics") or ""  # LLM tags (azure, networking, ...) sharpen recall
+    return f"{path_words}. {desc} {topics}".strip()
 
 
 # Keyword heuristic for risk_level (replaces per-command LLM judgement for the bulk).
@@ -447,7 +449,7 @@ def build(
         conn.executemany(
             "INSERT OR REPLACE INTO arguments "
             "(cmd_path,app_id,node_name,node_type,description,risk_level,"
-            " example_template,docker_image,script_url,source_url) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " example_template,docker_image,script_url,source_url,topics) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     a["cmd_path"], a["app_id"], a["node_name"],
@@ -457,6 +459,7 @@ def build(
                     _risk_level(a["cmd_path"], a.get("description") or "", a.get("risk_level")),
                     a.get("example_template"),
                     a.get("docker_image"), a.get("script_url"), a.get("source_url"),
+                    a.get("topics"),
                 )
                 for a in batch
             ],
@@ -469,8 +472,9 @@ def build(
             "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?,?,?)",
             [(a["cmd_path"],
               _fts_name(a["app_id"], app_name_map.get(a["app_id"], a["app_id"])),
-              # capabilities = path words + description so keyword search hits e.g. "vpc"→create-vpc
-              f"{a['cmd_path'].replace('.', ' ').replace('-', ' ')} {a.get('description') or ''}")
+              # capabilities = path words + description + LLM topics → search matches
+              # "vpc"→create-vpc and brand/concept words ("azure"→az) via the topic tags
+              f"{a['cmd_path'].replace('.', ' ').replace('-', ' ')} {a.get('description') or ''} {a.get('topics') or ''}")
              for a in batch],
         )
         conn.executemany(

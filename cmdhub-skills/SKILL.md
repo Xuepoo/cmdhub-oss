@@ -60,6 +60,23 @@ Guidance for agents:
 - Respect `risk_level`: confirm with the user before any `dangerous` command.
 - Use `--full` / `--usage` / `--minimal` to control output verbosity.
 
+## Search tips (get the right command faster)
+
+The index searches across `name`, `cmd_path`, `description`, and curated `topics`
+(keyword tags like `azure`, `networking`, `vcs`) with hybrid keyword + vector ranking.
+
+- **Name the tool when you know it** — "create a vpc on aws", "github auth login".
+  This scopes results to that tool and surfaces the exact subcommand.
+- **Use the resource + action** — "create vpc", "list instances", "delete bucket".
+  Concrete nouns/verbs match real command names far better than vague phrases.
+- **Brand/concept words work** — "azure", "kubernetes", "container registry" hit the
+  right tool via topic tags, even when the binary name differs (az, kubectl).
+- **Raise `--limit`** (default 5) to see more candidates when the top hit isn't ideal;
+  results are diversified so one tool can't flood the list.
+- **Check `risk_level`** before executing; confirm anything `dangerous`.
+- If a query returns nothing useful, re-phrase with the concrete tool/resource term
+  rather than an abstract sentence.
+
 ## MCP integration
 
 For tool-calling agents, run the MCP server (`cmdhub-mcp`, stdio JSON-RPC) which
