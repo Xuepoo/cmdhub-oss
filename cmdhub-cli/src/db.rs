@@ -259,27 +259,27 @@ pub fn search_cascading(
         }
     }
 
-    // Stage 1: select top 5 app_ids by 3-way Reciprocal Rank Fusion of FTS + vector +
-    // POPULARITY, with name dedup. Popularity is a third ranker over the (relevance-gated)
-    // candidate set: among the tools that match the query, the most widely-packaged one
-    // (apps.popularity, cross-ecosystem repo-count from the Repology dump) gets the best
-    // popularity rank. This lifts the canonical tool for brand/concept words (az for
-    // "azure", kubectl for "kubernetes") even when its name/path only weakly matches —
-    // a pure relevance multiplier can't, because a deep FTS rank stays tiny when scaled.
-    // No hardcoded vendor list; new sources just need their popularity column filled.
-    // The FTS candidate limit is widened (300) so canonical-but-weak-match tools enter
-    // the pool where the popularity ranker can promote them.
+    // Stage 1: select top 5 app_ids by FTS-RRF + vector-RRF + a popularity prior added by
+    // VALUE (apps.popularity in [0,1], the cross-ecosystem repo-count from the Repology
+    // dump), with name dedup. This lifts the canonical tool for brand/concept words (az for
+    // "azure", kubectl for "kubernetes") even when its name/path only weakly matches, while
+    // staying gentle on multi-token task queries (see pop_w below). No hardcoded vendor
+    // list; new sources just need their popularity column filled. The FTS candidate limit
+    // is widened (300) so a canonical-but-weak-match tool still enters the pool.
     // BM25 weights: cmd_path=0 (unindexed), name=5.0, capabilities=2.0.
     // Raising capabilities weight helps description-based queries (e.g. "knowledge" → obsidian).
     //
-    // Popularity weight is gated by query type: a single bare token is a brand/concept
-    // lookup ("azure", "kubernetes") where no tool is strongly relevant, so popularity must
-    // dominate to surface the canonical CLI; a multi-token query is a task description
-    // ("convert an image to equations") where one tool is strongly relevant, so popularity
-    // must only nudge — otherwise it would bury a correct niche tool (vectomancy) under a
-    // more widely-packaged but wrong one.
-    let qtok_n = content_tokens(query).len();
-    let pop_w: f64 = if qtok_n <= 1 { 1.0 } else { 0.15 };
+    // Popularity prior added to the Stage-1 RRF as pop_w_val * popularity^3. The CUBE is the
+    // key: with the desaturated popularity column (CAP=100) only truly-canonical tools sit
+    // near 1.0 (curl/git/tar/rm ~1.0, bat 0.996), while niche tools — including the user's
+    // own (vectomancy 0.24, cmdh 0.15) and namesakes (fus 0.24) — cluster at 0.15-0.3.
+    // Cubing widens that gap enormously (1.0^3=1.0 vs 0.24^3=0.014), so the prior strongly
+    // promotes canonical tools for generic queries (rm for "delete files", az for "azure")
+    // yet barely touches mid/low-popularity tools, letting relevance keep a correct niche
+    // tool on top of a specialised query. Tuned on the deterministic golden eval
+    // (scripts/eval_golden.py, peak at 0.015); pop_w_rank kept wired but unused (0.0).
+    let pop_w_rank: f64 = 0.0;
+    let pop_w_val: f64 = 0.015;
     let mut top_apps = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
@@ -311,14 +311,15 @@ pub fn search_cascading(
             ), \
             pop_ranked AS ( \
                 SELECT ps.app_id, ps.fts_pos, ps.vec_pos, a.name as nm, \
-                       dense_rank() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
+                       COALESCE(a.popularity, 0.0) as pop, \
+                       row_number() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
                 FROM pre_scored ps JOIN apps a ON ps.app_id = a.app_id \
             ), \
             scored AS ( \
                 SELECT app_id, nm, \
                        COALESCE(1.0 / (60.0 + fts_pos), 0.0) \
                        + COALESCE(1.0 / (60.0 + vec_pos), 0.0) \
-                       + :pop_w / (60.0 + pop_pos) as rrf_score \
+                       + :pop_w_rank / (60.0 + pop_pos) + :pop_w_val * pop * pop * pop as rrf_score \
                 FROM pop_ranked \
             ), \
             name_deduped AS ( \
@@ -333,7 +334,8 @@ pub fn search_cascading(
             rusqlite::named_params! {
                 ":query": &processed_query,
                 ":query_vector": vb,
-                ":pop_w": pop_w,
+                ":pop_w_rank": pop_w_rank,
+                ":pop_w_val": pop_w_val,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -354,12 +356,13 @@ pub fn search_cascading(
             ), \
             pop_ranked AS ( \
                 SELECT fo.app_id, fo.fts_pos, a.name as nm, \
-                       dense_rank() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
+                       COALESCE(a.popularity, 0.0) as pop, \
+                       row_number() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
                 FROM fts_ordered fo JOIN apps a ON fo.app_id = a.app_id \
             ), \
             scored AS ( \
                 SELECT app_id, nm, \
-                       (1.0 / (60.0 + fts_pos)) + :pop_w / (60.0 + pop_pos) as rrf_score \
+                       (1.0 / (60.0 + fts_pos)) + :pop_w_rank / (60.0 + pop_pos) + :pop_w_val * pop * pop * pop as rrf_score \
                 FROM pop_ranked \
             ), \
             name_deduped AS ( \
@@ -373,7 +376,8 @@ pub fn search_cascading(
         let app_rows = app_stmt.query_map(
             rusqlite::named_params! {
                 ":query": &processed_query,
-                ":pop_w": pop_w,
+                ":pop_w_rank": pop_w_rank,
+                ":pop_w_val": pop_w_val,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -597,7 +601,7 @@ pub fn search_cascading(
         let path_w = if q_tokens.len() >= 2 { 4 } else { 1 };
         // Popularity bonus mirrors the Stage-1 gating: decisive for a bare brand token,
         // a gentle nudge for descriptive queries so it can't bury a correct niche tool.
-        let pop_bonus_w = if q_tokens.len() <= 1 { 50.0 } else { 3.0 };
+        let pop_bonus_w = if q_tokens.len() <= 1 { 15.0 } else { 3.0 };
         let mut scored: Vec<(i32, usize, AciCommandContract)> = results
             .drain(..)
             .enumerate()

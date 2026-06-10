@@ -25,7 +25,10 @@ import subprocess
 from pathlib import Path
 
 # Above this many packaging repos, a project is "as canonical as it gets" -> popularity 1.0.
-_REPO_CAP = 30
+# Set near the p98 of the matched repo-count distribution (curl=196, git=178, ripgrep=125,
+# docker=101, azure-cli=50, kubectl=48, prowler=10): a low cap (e.g. 30) saturates every
+# moderately-packaged tool to 1.0 and destroys the gradient brand-word ranking needs.
+_REPO_CAP = 100
 
 
 def _pkgkeys(inst: dict, name: str) -> set[str]:
@@ -43,6 +46,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump", required=True)
     ap.add_argument("--db", default=str(Path.home() / ".local/share/cmdhub/cmdhub.db"))
+    ap.add_argument("--cap", type=int, default=_REPO_CAP)
     a = ap.parse_args()
 
     conn = sqlite3.connect(a.db)
@@ -114,7 +118,7 @@ def main() -> None:
     print(f"[pop] scan done: {seen} rows, matched {len(repos_of)} of {len(targets)} keys", flush=True)
 
     # popularity per app = log-normalised max repo-count across its candidate keys.
-    denom = math.log(1 + _REPO_CAP)
+    denom = math.log(1 + a.cap)
     app_pop: dict[str, float] = {}
     for key, repos in repos_of.items():
         pop = min(1.0, math.log(1 + len(repos)) / denom)
