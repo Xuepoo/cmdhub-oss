@@ -7,7 +7,7 @@ satisfy the intent, and at what rank. Reports found-rate, mean reciprocal rank, 
 the failing intents so ranking can be tuned with evidence instead of guesswork.
 
     OPENROUTER_API_KEY=... uv run --with requests python3 scripts/eval_search.py \
-        [--cmdh ~/.local/share/cargo/bin/cmdh] [--limit 5] [--model deepseek/deepseek-chat]
+        [--cmdh ~/.local/share/cargo/bin/cmdh] [--limit 5] [--model deepseek/deepseek-v4-flash]
 """
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cmdh", default=os.path.expanduser("~/.local/share/cargo/bin/cmdh"))
     ap.add_argument("--limit", type=int, default=5)
-    ap.add_argument("--model", default="deepseek/deepseek-chat")
+    ap.add_argument("--model", default="deepseek/deepseek-v4-flash")
     ap.add_argument("--proxy", default="http://127.0.0.1:1080")
     args = ap.parse_args()
     key = os.environ.get("OPENROUTER_API_KEY", "")

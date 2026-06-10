@@ -7,7 +7,7 @@ JSON {description, topics[], risk_level, example_template}. Output is a resumabl
 meant to run on the VPS (OpenRouter unrestricted, deepseek cheap).
 
     OPENROUTER_API_KEY=... python3 llm_enrich.py --in commands.json --out enrich.jsonl \
-        [--workers 60] [--model deepseek/deepseek-chat] [--proxy ""]
+        [--workers 60] [--model deepseek/deepseek-v4-flash] [--proxy ""]
 """
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def main() -> None:
     ap.add_argument("--in", dest="inp", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--workers", type=int, default=60)
-    ap.add_argument("--model", default="deepseek/deepseek-chat")
+    ap.add_argument("--model", default="deepseek/deepseek-v4-flash")
     ap.add_argument("--proxy", default="")
     a = ap.parse_args()
     key = os.environ.get("OPENROUTER_API_KEY", "")
