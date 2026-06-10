@@ -96,8 +96,7 @@ fn preprocess_query(query: &str, use_and: bool) -> String {
     // OR-query only: widen with domain synonyms so e.g. "configure networking" also
     // matches vpc/subnet/gateway commands. AND-query stays strict (exact intent).
     if !use_and {
-        let mut seen: std::collections::HashSet<String> =
-            base.iter().cloned().collect();
+        let mut seen: std::collections::HashSet<String> = base.iter().cloned().collect();
         for w in &base {
             for syn in concept_synonyms(w) {
                 if seen.insert((*syn).to_string()) {
@@ -260,17 +259,33 @@ pub fn search_cascading(
         }
     }
 
-    // Stage 1: select top 5 app_ids via RRF, with source priority multiplier and name dedup.
-    // Priority: official (com.github/com.gitlab) 1.5x > distro (org.archlinux) 1.0x > tldr 0.7x.
-    // Within same tool name, only the highest-scoring source is retained.
+    // Stage 1: select top 5 app_ids by 3-way Reciprocal Rank Fusion of FTS + vector +
+    // POPULARITY, with name dedup. Popularity is a third ranker over the (relevance-gated)
+    // candidate set: among the tools that match the query, the most widely-packaged one
+    // (apps.popularity, cross-ecosystem repo-count from the Repology dump) gets the best
+    // popularity rank. This lifts the canonical tool for brand/concept words (az for
+    // "azure", kubectl for "kubernetes") even when its name/path only weakly matches —
+    // a pure relevance multiplier can't, because a deep FTS rank stays tiny when scaled.
+    // No hardcoded vendor list; new sources just need their popularity column filled.
+    // The FTS candidate limit is widened (300) so canonical-but-weak-match tools enter
+    // the pool where the popularity ranker can promote them.
     // BM25 weights: cmd_path=0 (unindexed), name=5.0, capabilities=2.0.
     // Raising capabilities weight helps description-based queries (e.g. "knowledge" → obsidian).
+    //
+    // Popularity weight is gated by query type: a single bare token is a brand/concept
+    // lookup ("azure", "kubernetes") where no tool is strongly relevant, so popularity must
+    // dominate to surface the canonical CLI; a multi-token query is a task description
+    // ("convert an image to equations") where one tool is strongly relevant, so popularity
+    // must only nudge — otherwise it would bury a correct niche tool (vectomancy) under a
+    // more widely-packaged but wrong one.
+    let qtok_n = content_tokens(query).len();
+    let pop_w: f64 = if qtok_n <= 1 { 1.0 } else { 0.15 };
     let mut top_apps = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
             "WITH fts_matched AS ( \
                 SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC) as fts_pos \
-                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
+                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 300 \
             ), \
             fts_ordered AS ( \
                 SELECT arg.app_id, MIN(m.fts_pos) as fts_pos \
@@ -279,7 +294,7 @@ pub fn search_cascading(
             ), \
             vec_knn AS ( \
                 SELECT cmd_path, distance FROM commands_vec \
-                WHERE embedding MATCH :query_vector AND k = 100 \
+                WHERE embedding MATCH :query_vector AND k = 200 \
             ), \
             vec_rank AS ( \
                 SELECT arg.app_id, row_number() OVER (ORDER BY vk.distance ASC) as vec_pos \
@@ -289,23 +304,27 @@ pub fn search_cascading(
             pre_scored AS ( \
                 SELECT \
                     COALESCE(fts.app_id, vec.app_id) as app_id, \
-                    COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) as raw_rrf \
+                    fts.fts_pos as fts_pos, vec.vec_pos as vec_pos \
                 FROM (SELECT app_id FROM fts_ordered UNION SELECT app_id FROM vec_rank) u \
                 LEFT JOIN fts_ordered fts ON u.app_id = fts.app_id \
                 LEFT JOIN vec_rank vec ON u.app_id = vec.app_id \
             ), \
+            pop_ranked AS ( \
+                SELECT ps.app_id, ps.fts_pos, ps.vec_pos, a.name as nm, \
+                       dense_rank() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
+                FROM pre_scored ps JOIN apps a ON ps.app_id = a.app_id \
+            ), \
             scored AS ( \
-                SELECT app_id, raw_rrf * CASE \
-                    WHEN app_id LIKE 'com.github.%' OR app_id LIKE 'com.gitlab.%' THEN 1.5 \
-                    WHEN app_id LIKE 'org.tldr.%' THEN 0.7 \
-                    ELSE 1.0 \
-                END as rrf_score \
-                FROM pre_scored \
+                SELECT app_id, nm, \
+                       COALESCE(1.0 / (60.0 + fts_pos), 0.0) \
+                       + COALESCE(1.0 / (60.0 + vec_pos), 0.0) \
+                       + :pop_w / (60.0 + pop_pos) as rrf_score \
+                FROM pop_ranked \
             ), \
             name_deduped AS ( \
-                SELECT s.app_id, s.rrf_score, \
-                       row_number() OVER (PARTITION BY a.name ORDER BY s.rrf_score DESC) as rn \
-                FROM scored s JOIN apps a ON s.app_id = a.app_id \
+                SELECT app_id, rrf_score, \
+                       row_number() OVER (PARTITION BY nm ORDER BY rrf_score DESC) as rn \
+                FROM scored \
             ) \
             SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 5"
         )?;
@@ -314,6 +333,7 @@ pub fn search_cascading(
             rusqlite::named_params! {
                 ":query": &processed_query,
                 ":query_vector": vb,
+                ":pop_w": pop_w,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -325,25 +345,27 @@ pub fn search_cascading(
         let mut app_stmt = conn.prepare(
             "WITH fts_matched AS ( \
                 SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC) as fts_pos \
-                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
+                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 300 \
             ), \
             fts_ordered AS ( \
                 SELECT arg.app_id, MIN(m.fts_pos) as fts_pos \
                 FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
                 GROUP BY arg.app_id \
             ), \
+            pop_ranked AS ( \
+                SELECT fo.app_id, fo.fts_pos, a.name as nm, \
+                       dense_rank() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
+                FROM fts_ordered fo JOIN apps a ON fo.app_id = a.app_id \
+            ), \
             scored AS ( \
-                SELECT fo.app_id, (1.0 / (60.0 + fo.fts_pos)) * CASE \
-                    WHEN fo.app_id LIKE 'com.github.%' OR fo.app_id LIKE 'com.gitlab.%' THEN 1.5 \
-                    WHEN fo.app_id LIKE 'org.tldr.%' THEN 0.7 \
-                    ELSE 1.0 \
-                END as rrf_score \
-                FROM fts_ordered fo \
+                SELECT app_id, nm, \
+                       (1.0 / (60.0 + fts_pos)) + :pop_w / (60.0 + pop_pos) as rrf_score \
+                FROM pop_ranked \
             ), \
             name_deduped AS ( \
-                SELECT s.app_id, s.rrf_score, \
-                       row_number() OVER (PARTITION BY a.name ORDER BY s.rrf_score DESC) as rn \
-                FROM scored s JOIN apps a ON s.app_id = a.app_id \
+                SELECT app_id, rrf_score, \
+                       row_number() OVER (PARTITION BY nm ORDER BY rrf_score DESC) as rn \
+                FROM scored \
             ) \
             SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 5"
         )?;
@@ -351,6 +373,7 @@ pub fn search_cascading(
         let app_rows = app_stmt.query_map(
             rusqlite::named_params! {
                 ":query": &processed_query,
+                ":pop_w": pop_w,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -375,7 +398,7 @@ pub fn search_cascading(
             ) \
             SELECT DISTINCT arg.app_id \
             FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
-            LIMIT 5"
+            LIMIT 5",
         )?;
         let fts_app_rows = fts_only_stmt.query_map(
             rusqlite::named_params! { ":query": &processed_query },
@@ -392,6 +415,28 @@ pub fn search_cascading(
     // Pad top_apps to length 8 for Stage 2 named params
     while top_apps.len() < 8 {
         top_apps.push(top_apps[0].clone());
+    }
+
+    // Popularity prior for the selected apps, reused in the Stage-2 re-rank so the
+    // within-app command ordering also favours canonical tools (data-driven, no prefixes).
+    let mut pop_map: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    {
+        let mut uniq: Vec<&String> = top_apps.iter().collect();
+        uniq.sort();
+        uniq.dedup();
+        let placeholders = uniq.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        if let Ok(mut pstmt) = conn.prepare(&format!(
+            "SELECT app_id, COALESCE(popularity, 0.0) FROM apps WHERE app_id IN ({placeholders})"
+        )) {
+            let params = rusqlite::params_from_iter(uniq.iter().map(|s| s.as_str()));
+            if let Ok(rows) = pstmt.query_map(params, |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+            }) {
+                for kv in rows.flatten() {
+                    pop_map.insert(kv.0, kv.1);
+                }
+            }
+        }
     }
 
     // Stage 2: Scoped search.
@@ -543,12 +588,35 @@ pub fn search_cascading(
     let q_tokens = content_tokens(query);
     if !q_tokens.is_empty() && results.len() > 1 {
         let n = results.len() as i32;
+        // Path-match disambiguation is decisive for action/resource queries (multiple
+        // tokens, e.g. "create a vpc on aws" → aws.ec2.create-vpc) but harmful for a bare
+        // brand/concept word (e.g. "azure"): there a niche tool with the word literally in
+        // its path (prowler.azure) would bury the canonical CLI (az), whose identity lives
+        // in its popularity/topics, not its command path. So weight path-match strongly only
+        // when the query is specific, and lean on the popularity prior for single tokens.
+        let path_w = if q_tokens.len() >= 2 { 4 } else { 1 };
+        // Popularity bonus mirrors the Stage-1 gating: decisive for a bare brand token,
+        // a gentle nudge for descriptive queries so it can't bury a correct niche tool.
+        let pop_bonus_w = if q_tokens.len() <= 1 { 50.0 } else { 3.0 };
         let mut scored: Vec<(i32, usize, AciCommandContract)> = results
             .drain(..)
             .enumerate()
             .map(|(i, c)| {
                 let rrf = n - i as i32; // higher = better original rank
-                let composite = rrf + 4 * path_match_score(&c.cmd_path, &q_tokens);
+                let pop_bonus =
+                    (pop_bonus_w * pop_map.get(&c.app_id).copied().unwrap_or(0.0)) as i32;
+                // Strong boost for root commands on brand lookups so subcommands don't bury them
+                let root_bonus = if matches!(c.node_type, cmdhub_shared::NodeType::Root)
+                    && q_tokens.len() <= 1
+                {
+                    20
+                } else {
+                    0
+                };
+                let composite = rrf
+                    + path_w * path_match_score(&c.cmd_path, &q_tokens)
+                    + pop_bonus
+                    + root_bonus;
                 (composite, i, c)
             })
             .collect();
@@ -584,9 +652,9 @@ pub fn search_cascading(
 /// Lowercased content tokens of a query (alphanumerics, stop-words removed).
 fn content_tokens(query: &str) -> std::collections::HashSet<String> {
     let stop: std::collections::HashSet<&str> = [
-        "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by",
-        "and", "or", "from", "my", "your", "our", "me", "us", "i", "want", "know", "using",
-        "use", "do", "can", "get", "please", "help",
+        "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by", "and",
+        "or", "from", "my", "your", "our", "me", "us", "i", "want", "know", "using", "use", "do",
+        "can", "get", "please", "help",
     ]
     .iter()
     .cloned()
@@ -605,7 +673,7 @@ fn content_tokens(query: &str) -> std::collections::HashSet<String> {
 /// extra 1 (ec2) → 5; "aws.apigatewayv2.create-vpc-link" → overlap 2, extra 2 → 4.
 fn path_match_score(cmd_path: &str, q_tokens: &std::collections::HashSet<String>) -> i32 {
     // Drop the first segment (the binary, e.g. "aws") — it's already how we got here.
-    let after_binary = cmd_path.splitn(2, '.').nth(1).unwrap_or(cmd_path);
+    let after_binary = cmd_path.split_once('.').map(|x| x.1).unwrap_or(cmd_path);
     let tokens: Vec<String> = after_binary
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| !w.is_empty())
