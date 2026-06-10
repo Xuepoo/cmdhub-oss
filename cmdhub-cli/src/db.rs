@@ -560,12 +560,22 @@ pub fn search_cascading(
     let mut final_results = exact_results.clone();
     final_results.append(&mut results);
 
-    // Deduplicate by cmd_path: collapses the same command coming from multiple sources
-    // (e.g. org.archlinux.nb + org.tldr.nb both expose "nb"), while still allowing several
-    // distinct subcommands of one tool to surface (e.g. "aws ec2 create-vpc",
-    // "aws ec2 create-subnet" for a networking query) — which is the core search use case.
+    // Deduplicate by cmd_path (same command from multiple sources, e.g. org.archlinux.nb +
+    // org.tldr.nb), AND cap results per app so one tool's subcommands can't flood the list:
+    // a brand/concept query like "azure" must surface the Azure CLI, not 7 of prowler's
+    // "prowler azure ..." checks. Up to PER_APP_CAP keeps "aws ec2 create-vpc/create-subnet"
+    // working while leaving room for other tools.
+    const PER_APP_CAP: usize = 3;
     let mut seen_paths = std::collections::HashSet::new();
-    final_results.retain(|r| seen_paths.insert(r.cmd_path.clone()));
+    let mut per_app: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    final_results.retain(|r| {
+        if !seen_paths.insert(r.cmd_path.clone()) {
+            return false;
+        }
+        let n = per_app.entry(r.app_id.clone()).or_insert(0);
+        *n += 1;
+        *n <= PER_APP_CAP
+    });
 
     final_results.truncate(limit);
     Ok(final_results)
