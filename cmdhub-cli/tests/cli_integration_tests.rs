@@ -824,9 +824,8 @@ async fn test_client_incremental_sync_deletions_and_updates() {
         ..Default::default()
     };
 
-    drop(_guard);
-
-    // Run updater
+    // Run updater — keep _guard alive through the entire test so that
+    // XDG_DATA_HOME stays stable while update_database and open_db run.
     cmdhub_cli::updater::update_database(&config, false)
         .await
         .unwrap();

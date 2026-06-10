@@ -529,7 +529,7 @@ async fn test_hybrid_search_accuracy_precision_evaluation() {
                 cmd.cmd_path,
                 &app_id,
                 cmd.name,
-                "arg",
+                "root",
                 cmd.description,
                 "safe",
                 Some(cmd.name.to_string()),

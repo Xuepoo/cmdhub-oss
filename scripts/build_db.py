@@ -190,7 +190,8 @@ CREATE TABLE IF NOT EXISTS apps (
     app_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     os_aliases TEXT,
-    install_instructions TEXT
+    install_instructions TEXT,
+    popularity REAL DEFAULT 0.0
 );
 CREATE TABLE IF NOT EXISTS arguments (
     cmd_path TEXT PRIMARY KEY,
@@ -432,12 +433,13 @@ def build(
         return f"{binary_name} {pkg_alias}"
 
     conn.executemany(
-        "INSERT OR REPLACE INTO apps VALUES (?,?,?,?)",
+        "INSERT OR REPLACE INTO apps VALUES (?,?,?,?,?)",
         [
             (
                 a["app_id"], a["name"],
                 strip_json_nulls(a.get("os_aliases")),
                 strip_json_nulls(a.get("install_instructions")),
+                float(a.get("popularity") or 0.0),
             )
             for a in apps
         ],

@@ -12,11 +12,7 @@
 //!   CMDH_MODEL_PATH — override ONNX model path (default: ~/.local/share/cmdhub/models/bge-micro-v2.onnx)
 
 use anyhow::{Context, Result};
-use cmdhub_cli::{
-    db::init_db,
-    inference::EmbeddingModel,
-    tokenizer::Tokenizer,
-};
+use cmdhub_cli::{db::init_db, inference::EmbeddingModel, tokenizer::Tokenizer};
 use rusqlite::Connection;
 use serde::Deserialize;
 use std::{
@@ -163,8 +159,7 @@ fn main() -> Result<()> {
     eprintln!("[build-db] Loading export from {input_path}...");
     let raw = std::fs::read_to_string(&input_path)
         .with_context(|| format!("Failed to read {input_path}"))?;
-    let export: Export =
-        serde_json::from_str(&raw).context("Failed to parse export JSON")?;
+    let export: Export = serde_json::from_str(&raw).context("Failed to parse export JSON")?;
 
     eprintln!(
         "[build-db] Loaded {} apps, {} arguments",
@@ -233,15 +228,13 @@ fn main() -> Result<()> {
             .unwrap_or(&arg.app_id);
 
         match embed(&model, &tokenizer, &arg.description) {
-            Ok(emb_bytes) => {
-                match insert_argument(&conn, arg, app_name, &emb_bytes) {
-                    Ok(()) => ok += 1,
-                    Err(e) => {
-                        eprintln!("[WARN] insert failed for {}: {e}", arg.cmd_path);
-                        failed += 1;
-                    }
+            Ok(emb_bytes) => match insert_argument(&conn, arg, app_name, &emb_bytes) {
+                Ok(()) => ok += 1,
+                Err(e) => {
+                    eprintln!("[WARN] insert failed for {}: {e}", arg.cmd_path);
+                    failed += 1;
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("[WARN] embed failed for {}: {e}", arg.cmd_path);
                 failed += 1;
@@ -281,8 +274,7 @@ fn main() -> Result<()> {
         let zst_path = format!("{output_path}.zst");
         eprintln!("[build-db] Compressing → {zst_path}...");
         let db_bytes = std::fs::read(&output_db)?;
-        let compressed = zstd::encode_all(&db_bytes[..], 19)
-            .context("zstd compression failed")?;
+        let compressed = zstd::encode_all(&db_bytes[..], 19).context("zstd compression failed")?;
         std::fs::write(&zst_path, &compressed)?;
 
         let sha256 = {

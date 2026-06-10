@@ -20,14 +20,18 @@ def export(db_path: Path, out_path: Path) -> None:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
+    has_pop = any(c[1] == "popularity" for c in conn.execute("PRAGMA table_info(apps)"))
+    pop_sel = "popularity" if has_pop else "0.0 AS popularity"
     apps = [
         {
             "app_id": r["app_id"],
             "name": r["name"],
             "os_aliases": r["os_aliases"],
             "install_instructions": r["install_instructions"],
+            "popularity": r["popularity"],
         }
-        for r in conn.execute("SELECT app_id, name, os_aliases, install_instructions FROM apps")
+        for r in conn.execute(
+            f"SELECT app_id, name, os_aliases, install_instructions, {pop_sel} FROM apps")
     ]
 
     has_topics = any(c[1] == "topics" for c in conn.execute("PRAGMA table_info(arguments)"))

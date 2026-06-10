@@ -20,9 +20,16 @@ from pathlib import Path
 
 import requests
 
+# Genuine CLI tools whose names match a library pattern below → never skip.
+_ALLOW = {"libtree", "python-llm", "libcaca", "libxml2"}
+
 # Names that are almost never an interactive CLI tool → skip to keep the index useful.
+# Includes language libraries/bindings (python-*, perl-*, lib*, *-sdk, *-dev, *-doc),
+# which dominate AUR by count and pollute search (python-azure-mgmt-* vs `az`).
 _SKIP = re.compile(
-    r"(^lib32-|^lib\d|-dkms$|-dbg$|-debug$|-git$|-svn$|-hg$|-bzr$"
+    r"(^lib|^python2?-|^perl-|^ruby-|^haskell-|^ghc-|^rust-|^nodejs-|^golang-"
+    r"|-sdk$|-headers$|-dev$|-docs?$|-bindings$|-typelib$|-stubs$"
+    r"|-dkms$|-dbg$|-debug$|-git$|-svn$|-hg$|-bzr$"
     r"|^ttf-|^otf-|-fonts?$|-theme$|-themes$|-icon-theme$|-icons$|-cursor-theme$"
     r"|-wallpapers?$|-gtk-theme$|-kde-theme$|-cursors$|-sounds?$|-emoji"
     r"|-i18n-|-l10n-|-lang-|-translation|-locale)",
@@ -45,7 +52,7 @@ def fetch(out_path: Path, proxy: str) -> None:
     skipped = 0
     for p in data:
         name = p.get("Name")
-        if not name or _SKIP.search(name):
+        if not name or (name not in _ALLOW and _SKIP.search(name)):
             skipped += 1
             continue
         desc = (p.get("Description") or "").strip()
