@@ -270,17 +270,20 @@ pub fn search_cascading(
     // BM25 weights: cmd_path=0 (unindexed), name=5.0, capabilities=2.0.
     // Raising capabilities weight helps description-based queries (e.g. "knowledge" → obsidian).
     //
-    // Popularity prior added to the Stage-1 RRF as pop_w_val * popularity^3. The CUBE is the
-    // key: with the desaturated popularity column (CAP=100) only truly-canonical tools sit
-    // near 1.0 (curl/git/tar/rm ~1.0, bat 0.996), while niche tools — including the user's
-    // own (vectomancy 0.24, cmdh 0.15) and namesakes (fus 0.24) — cluster at 0.15-0.3.
-    // Cubing widens that gap enormously (1.0^3=1.0 vs 0.24^3=0.014), so the prior strongly
-    // promotes canonical tools for generic queries (rm for "delete files", az for "azure")
-    // yet barely touches mid/low-popularity tools, letting relevance keep a correct niche
-    // tool on top of a specialised query. Tuned on the deterministic golden eval
-    // (scripts/eval_golden.py, peak at 0.015); pop_w_rank kept wired but unused (0.0).
-    let pop_w_rank: f64 = 0.0;
-    let pop_w_val: f64 = 0.015;
+    // Popularity prior (apps.popularity in [0,1], desaturated CAP=100 so values are distinct).
+    // Popularity form is gated by query type. A single bare token is a brand lookup
+    // ("azure") where no tool is strongly relevant: use a LINEAR, strong weight so the
+    // canonical tool (azure-cli 0.85) clearly beats a namesake (opensearch-azure 0.39).
+    // A multi-token query is a task description where one tool is usually strongly
+    // relevant: use a CUBED, gentle weight so only near-canonical tools (rm/git/bat ~1.0)
+    // get lifted for generic tasks, never burying a correct niche tool (vectomancy 0.24,
+    // 0.24^3 ≈ 0.014). Tuned on scripts/eval_golden.py.
+    let qtok_n = content_tokens(query).len();
+    let (pw_lin, pw_cube): (f64, f64) = if qtok_n <= 1 {
+        (0.05, 0.0)
+    } else {
+        (0.0, 0.015)
+    };
     let mut top_apps = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
@@ -320,7 +323,7 @@ pub fn search_cascading(
                 SELECT app_id, nm, \
                        COALESCE(1.0 / (60.0 + fts_pos), 0.0) \
                        + COALESCE(1.0 / (60.0 + vec_pos), 0.0) \
-                       + :pop_w_rank / (60.0 + pop_pos) + :pop_w_val * pop * pop * pop as rrf_score \
+                       + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
                 FROM pop_ranked \
             ), \
             name_deduped AS ( \
@@ -335,8 +338,8 @@ pub fn search_cascading(
             rusqlite::named_params! {
                 ":query": &cand_query,
                 ":query_vector": vb,
-                ":pop_w_rank": pop_w_rank,
-                ":pop_w_val": pop_w_val,
+                ":pw_lin": pw_lin,
+                ":pw_cube": pw_cube,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -363,7 +366,7 @@ pub fn search_cascading(
             ), \
             scored AS ( \
                 SELECT app_id, nm, \
-                       (1.0 / (60.0 + fts_pos)) + :pop_w_rank / (60.0 + pop_pos) + :pop_w_val * pop * pop * pop as rrf_score \
+                       (1.0 / (60.0 + fts_pos)) + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
                 FROM pop_ranked \
             ), \
             name_deduped AS ( \
@@ -377,8 +380,8 @@ pub fn search_cascading(
         let app_rows = app_stmt.query_map(
             rusqlite::named_params! {
                 ":query": &cand_query,
-                ":pop_w_rank": pop_w_rank,
-                ":pop_w_val": pop_w_val,
+                ":pw_lin": pw_lin,
+                ":pw_cube": pw_cube,
             },
             |row| row.get::<_, String>(0),
         )?;
