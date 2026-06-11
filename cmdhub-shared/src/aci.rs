@@ -138,6 +138,9 @@ pub struct AciCommandContract {
     /// URL of the open-source code repository
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+    /// Popularity score (0.0 to 1.0) derived from distro package counts
+    #[serde(default)]
+    pub popularity: f64,
 }
 
 /// Metadata about the local offline database.
@@ -194,12 +197,13 @@ pub struct IncrementalSyncPayload {
 }
 
 /// Database record representing the `apps` table row.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DbApp {
     pub app_id: String,
     pub name: String,
     pub os_aliases: Option<String>,
     pub install_instructions: Option<String>,
+    pub popularity: f64,
 }
 
 /// Database record representing the `arguments` table row.
@@ -221,7 +225,7 @@ pub struct DbArgument {
 ///
 /// This provides the exact structure returned by combining a specific
 /// CLI command/argument with its parent app metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DbAciRecord {
     pub app_id: String,
     pub name: String,
@@ -232,6 +236,7 @@ pub struct DbAciRecord {
     pub example_template: Option<String>,
     pub os_aliases: Option<String>,
     pub install_instructions: Option<String>,
+    pub popularity: f64,
     pub docker_image: Option<String>,
     pub script_url: Option<String>,
     pub source_url: Option<String>,
@@ -262,6 +267,7 @@ impl AciCommandContract {
             name: self.name.clone(),
             os_aliases,
             install_instructions,
+            popularity: self.popularity,
         };
 
         let node_type_str = match self.node_type {
@@ -364,6 +370,7 @@ impl TryFrom<DbAciRecord> for AciCommandContract {
             docker_image: record.docker_image,
             script_url: record.script_url,
             source_url: record.source_url,
+            popularity: record.popularity,
         })
     }
 }
@@ -374,7 +381,8 @@ CREATE TABLE IF NOT EXISTS apps (
     app_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     os_aliases TEXT,
-    install_instructions TEXT
+    install_instructions TEXT,
+    popularity REAL DEFAULT 0.0
 );
 "#;
 

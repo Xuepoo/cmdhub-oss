@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn test_config_parsing_defaults() {
         let toml_str = r#"
-            api_url = "https://api.cmdhub.xyz"
+            api_url = "https://cdn.cmdhub.org"
             public_key = "01020304"
             timeout_seconds = 30
         "#;

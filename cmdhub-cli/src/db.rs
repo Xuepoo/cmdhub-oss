@@ -186,6 +186,7 @@ pub fn search_cascading(
             arg.example_template, \
             app.os_aliases, \
             app.install_instructions, \
+            app.popularity, \
             arg.docker_image, \
             arg.script_url, \
             arg.source_url \
@@ -212,9 +213,10 @@ pub fn search_cascading(
                 example_template: row.get(6)?,
                 os_aliases: row.get(7)?,
                 install_instructions: row.get(8)?,
-                docker_image: row.get(9)?,
-                script_url: row.get(10)?,
-                source_url: row.get(11)?,
+                popularity: row.get(9)?,
+                docker_image: row.get(10)?,
+                script_url: row.get(11)?,
+                source_url: row.get(12)?,
             })
         },
     )?;
@@ -474,6 +476,7 @@ pub fn search_cascading(
                 arg.example_template, \
                 app.os_aliases, \
                 app.install_instructions, \
+                app.popularity, \
                 arg.docker_image, \
                 arg.script_url, \
                 arg.source_url \
@@ -512,9 +515,10 @@ pub fn search_cascading(
                     example_template: row.get(6)?,
                     os_aliases: row.get(7)?,
                     install_instructions: row.get(8)?,
-                    docker_image: row.get(9)?,
-                    script_url: row.get(10)?,
-                    source_url: row.get(11)?,
+                    popularity: row.get(9)?,
+                    docker_image: row.get(10)?,
+                    script_url: row.get(11)?,
+                    source_url: row.get(12)?,
                 })
             },
         )?;
@@ -537,6 +541,7 @@ pub fn search_cascading(
                 arg.example_template, \
                 app.os_aliases, \
                 app.install_instructions, \
+                app.popularity, \
                 arg.docker_image, \
                 arg.script_url, \
                 arg.source_url \
@@ -573,9 +578,10 @@ pub fn search_cascading(
                     example_template: row.get(6)?,
                     os_aliases: row.get(7)?,
                     install_instructions: row.get(8)?,
-                    docker_image: row.get(9)?,
-                    script_url: row.get(10)?,
-                    source_url: row.get(11)?,
+                    popularity: row.get(9)?,
+                    docker_image: row.get(10)?,
+                    script_url: row.get(11)?,
+                    source_url: row.get(12)?,
                 })
             },
         )?;

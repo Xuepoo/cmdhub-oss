@@ -285,6 +285,7 @@ mod tests {
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
         };
 
         let mut config = Config::default();
@@ -327,6 +328,7 @@ mod tests {
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
         };
 
         let mut config = Config::default();

@@ -26,7 +26,7 @@ pub async fn ensure_model_installed(config: &Config) -> Result<PathBuf> {
         .vector
         .model_url
         .as_deref()
-        .unwrap_or("https://cdn.cmdhub.xyz/models/bge-micro-v2.onnx");
+        .unwrap_or("https://cdn.cmdhub.org/models/bge-micro-v2.onnx");
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(

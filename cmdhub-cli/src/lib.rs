@@ -125,7 +125,7 @@ pub async fn run() -> Result<()> {
             .collect();
         let config_content = format!(
             r#"# CmdHub configuration file
-api_url = "https://api.cmdhub.xyz"
+api_url = "https://cdn.cmdhub.org"
 public_key = "{default_key}"
 timeout_seconds = 30
 
