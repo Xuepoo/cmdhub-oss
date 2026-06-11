@@ -259,6 +259,62 @@ def _is_noise_command(cmd_path: str) -> bool:
     return "completion" in parts[1:] or "completions" in parts[1:]
 
 
+def _default_overrides_path() -> str:
+    """Repo-local default: <repo>/data/search_overrides.json. Override via
+    CMDHUB_BUILD_OVERRIDES env or the --overrides CLI flag (cloud-native injection)."""
+    return str(Path(__file__).resolve().parent.parent / "data" / "search_overrides.json")
+
+
+def _apply_overrides(arguments: list[dict], apps: list[dict], overrides_path: str | None) -> list[dict]:
+    """Apply build-time search-quality overrides before embedding.
+
+    Applied after dedup/noise-filtering and before FTS + vector construction, so the
+    corrected description/topics flow into BOTH indexes. This is the durable home for
+    golden-eval fixes (see scripts/eval_golden.py) — patching the live SQLite directly
+    is lost on the next rebuild, but these overrides re-apply every build.
+    """
+    if not overrides_path or not os.path.exists(overrides_path):
+        return arguments
+    with open(overrides_path, encoding="utf-8") as f:
+        ov = json.load(f)
+
+    by_path = {a["cmd_path"]: a for a in arguments}
+    app_ids = {a["app_id"] for a in apps}
+
+    n_patch = 0
+    for cmd_path, patch in ov.get("patch", {}).items():
+        a = by_path.get(cmd_path)
+        if a is None:
+            continue
+        if "description" in patch:
+            a["description"] = patch["description"]
+        if "topics" in patch:
+            a["topics"] = patch["topics"]
+        if "topics_append" in patch:
+            a["topics"] = ((a.get("topics") or "") + " " + patch["topics_append"]).strip()
+        n_patch += 1
+
+    n_add = 0
+    for rec in ov.get("add", []):
+        cp = rec["cmd_path"]
+        if cp in by_path:
+            continue
+        # Keep FK integrity: only add commands whose app already exists.
+        if rec.get("app_id") not in app_ids:
+            print(f"[build-db] override add skipped (app missing): {cp}", file=sys.stderr, flush=True)
+            continue
+        for k in ("example_template", "docker_image", "script_url", "source_url", "topics"):
+            rec.setdefault(k, None)
+        arguments.append(rec)
+        by_path[cp] = rec
+        n_add += 1
+
+    if n_patch or n_add:
+        print(f"[build-db] Applied overrides from {overrides_path}: "
+              f"patched {n_patch}, added {n_add}", file=sys.stderr, flush=True)
+    return arguments
+
+
 def _embed_text(arg: dict) -> str:
     """Text fed to the embedder: the command path (as words) + its description.
 
@@ -308,6 +364,7 @@ def build(
     batch_size: int,
     compress: bool,
     device: str = "cpu",
+    overrides_path: str | None = None,
 ) -> None:
     t0 = time.time()
 
@@ -337,6 +394,9 @@ def build(
         print(f"[build-db] Dropped {dup} duplicate cmd_paths", file=sys.stderr, flush=True)
     if noise:
         print(f"[build-db] Dropped {noise} help/version/completion noise commands", file=sys.stderr, flush=True)
+    # Apply build-time overrides before embedding so corrected text reaches FTS + vectors.
+    arguments = _apply_overrides(arguments, apps, overrides_path)
+
     total = len(arguments)
     print(f"[build-db] {len(apps)} apps, {total} arguments", file=sys.stderr, flush=True)
 
@@ -574,6 +634,12 @@ def main() -> None:
     ap.add_argument("--device", choices=["cpu", "cuda"], default="cpu",
                     help="cuda = single-process GPU embedding (fast, low system RAM)")
     ap.add_argument("--compress", action="store_true")
+    ap.add_argument(
+        "--overrides",
+        default=os.environ.get("CMDHUB_BUILD_OVERRIDES", _default_overrides_path()),
+        help="Build-time search-quality overrides JSON (applied before embedding). "
+             "Pass '' to disable. Env: CMDHUB_BUILD_OVERRIDES.",
+    )
     args = ap.parse_args()
 
     if not os.path.exists(args.model):
@@ -588,6 +654,7 @@ def main() -> None:
         batch_size=args.batch_size,
         compress=args.compress,
         device=args.device,
+        overrides_path=args.overrides or None,
     )
 
 

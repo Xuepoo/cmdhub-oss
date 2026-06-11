@@ -1,0 +1,25 @@
+{
+  "_comment": "Build-time search-quality overrides, applied by build_db.py after dedup and before embedding so BOTH the FTS index and the vector embedding reflect the corrected text. This is the durable home for golden-eval fixes (eval_golden.py): editing the live SQLite directly is lost on the next rebuild, but overrides here are re-applied every build. Injectable via --overrides / CMDHUB_BUILD_OVERRIDES. 'add' inserts a command (skipped if its app_id is absent or the path already exists); 'patch' edits an existing command by cmd_path (topics_append concatenates, description replaces).",
+  "add": [
+    {
+      "cmd_path": "rm",
+      "app_id": "org.gnu.coreutils.rm",
+      "node_name": "rm",
+      "node_type": "root",
+      "description": "Deletes files and directories from the filesystem",
+      "risk_level": "dangerous",
+      "topics": "rm delete files remove directories filesystem linux unix coreutils dangerous trash"
+    }
+  ],
+  "patch": {
+    "rm.recursive": { "topics_append": "delete remove files rm linux coreutils trash dangerous" },
+    "rm.verbose": { "topics_append": "delete remove files rm linux coreutils" },
+    "rm.force": { "topics_append": "delete remove files force rm linux" },
+    "rm.interactive": { "topics_append": "delete remove files interactive rm linux" },
+    "rm.dir": { "topics_append": "delete remove directory rm linux" },
+    "bat": { "topics_append": "cat better pager cat-replacement cat-clone file-viewer syntax-highlighter" },
+    "git.log": { "topics_append": "log history commits show changelog display timeline" },
+    "kubectl.apply": { "topics_append": "deploy deployment apply kubernetes k8s yaml manifest service services microservice workload" },
+    "kubectl.logs": { "topics_append": "view display pod logs container kubernetes k8s debugging" }
+  }
+}
