@@ -117,9 +117,14 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect::<String>();
-    if !force && computed_hex != manifest.sha256 {
+    // Always validate integrity, even with --force. --force is about bypassing the
+    // last_sync_time noop check (re-download an already-current version), NOT about
+    // skipping integrity: a stale CDN edge cache can serve an old .zst whose sha256 no
+    // longer matches the fresh manifest, and skipping this check used to surface that as
+    // a confusing "Ed25519 verification failed" instead of a clear SHA-256 mismatch.
+    if computed_hex != manifest.sha256 {
         return Err(anyhow::anyhow!(CmdHubError::Validation(format!(
-            "SHA-256 mismatch: computed {}, manifest {}",
+            "SHA-256 mismatch: computed {}, manifest {} (stale CDN cache? try again or purge)",
             computed_hex, manifest.sha256
         ))));
     }
