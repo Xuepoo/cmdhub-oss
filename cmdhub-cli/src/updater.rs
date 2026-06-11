@@ -281,11 +281,18 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
         }
 
         for vec in payload.command_vecs {
-            if vec.embedding.len() == 512 {
-                let mut vec_bytes = Vec::with_capacity(512 * 4);
-                for &val in &vec.embedding {
-                    vec_bytes.extend_from_slice(&val.to_ne_bytes());
-                }
+            // Support both int8_384 (new) and float32_512 (legacy) embedding formats.
+            let is_int8 = vec.embedding.len() == 384;
+            if is_int8 || vec.embedding.len() == 512 {
+                let vec_bytes: Vec<u8> = if is_int8 {
+                    vec.embedding.iter().map(|&v| {
+                        (v * 127.0).round().clamp(-128.0, 127.0) as i8 as u8
+                    }).collect()
+                } else {
+                    let mut b = Vec::with_capacity(512 * 4);
+                    for &val in &vec.embedding { b.extend_from_slice(&val.to_ne_bytes()); }
+                    b
+                };
                 let _ = tx.execute(
                     "DELETE FROM commands_vec WHERE cmd_path = ?1",
                     rusqlite::params![vec.cmd_path],

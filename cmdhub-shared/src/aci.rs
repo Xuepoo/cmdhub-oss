@@ -416,7 +416,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
 pub const CREATE_COMMANDS_VEC_TABLE: &str = r#"
 CREATE VIRTUAL TABLE IF NOT EXISTS commands_vec USING vec0(
     cmd_path TEXT PRIMARY KEY,
-    embedding float[512]
+    embedding float[384]
 );
 "#;
 

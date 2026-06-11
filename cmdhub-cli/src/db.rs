@@ -71,6 +71,13 @@ fn concept_synonyms(token: &str) -> &'static [&'static str] {
         "kubernetes" | "k8s" => &["pod", "deployment", "namespace", "cluster"],
         "secret" | "secrets" => &["secret", "credential", "key", "vault"],
         "dns" => &["dns", "domain", "record", "zone"],
+        // Intent verbs: user says "delete" but tools say "remove/unlink", etc.
+        "delete" | "erase" => &["remove", "unlink", "trash"],
+        "remove" => &["delete", "unlink"],
+        "view" | "read" => &["show", "display"],
+        "deploy" | "deployment" => &["apply", "install"],
+        "history" => &["log", "commits"],
+        "cat" => &["bat", "less", "pager"],
         _ => &[],
     }
 }
@@ -115,6 +122,21 @@ fn preprocess_query(query: &str, use_and: bool) -> String {
     }
 }
 
+/// Extract the embedding dimension declared in the commands_vec DDL, e.g. `float[384]` → 384.
+fn detect_vec_dim(conn: &Connection) -> Option<usize> {
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='commands_vec'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let pos = sql.find("float[")?;
+    let rest = &sql[pos + 6..];
+    let end = rest.find(']')?;
+    rest[..end].parse().ok()
+}
+
 pub fn search_cascading(
     conn: &Connection,
     query: &str,
@@ -124,6 +146,32 @@ pub fn search_cascading(
 ) -> Result<Vec<AciCommandContract>> {
     let and_query = preprocess_query(query, true);
     let or_query = preprocess_query(query, false);
+
+    // Adapt query vector to the DB's stored embedding dimension. The ONNX model outputs
+    // 384-dim vectors but an older database may still store float[512] (zero-padded).
+    // When there is a mismatch, pad (or truncate) the query vector so KNN succeeds.
+    // Once the database is rebuilt with 384-dim embeddings this branch is never taken.
+    let adapted_query_vector: Option<Vec<f32>>;
+    let query_vector: Option<&[f32]> = if enable_vector {
+        if let (Some(q), Some(db_dim)) = (query_vector, detect_vec_dim(conn)) {
+            if q.len() != db_dim {
+                let mut adapted = vec![0.0f32; db_dim];
+                let copy_len = q.len().min(db_dim);
+                adapted[..copy_len].copy_from_slice(&q[..copy_len]);
+                adapted_query_vector = Some(adapted);
+                adapted_query_vector.as_deref()
+            } else {
+                adapted_query_vector = None;
+                query_vector
+            }
+        } else {
+            adapted_query_vector = None;
+            query_vector
+        }
+    } else {
+        adapted_query_vector = None;
+        query_vector
+    };
 
     // Compute vec_bytes once; reused for all KNN queries below.
     let vec_bytes: Option<Vec<u8>> = if enable_vector {
@@ -665,10 +713,13 @@ pub fn search_cascading(
 
 /// Lowercased content tokens of a query (alphanumerics, stop-words removed).
 fn content_tokens(query: &str) -> std::collections::HashSet<String> {
+    // "show" and "view" are natural-language verbs in intent queries ("show git commit history")
+    // that accidentally match command names (git.show). Treating them as stop words here prevents
+    // path_match from penalising git.log relative to git.show for "show git commit history".
     let stop: std::collections::HashSet<&str> = [
         "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by", "and",
         "or", "from", "my", "your", "our", "me", "us", "i", "want", "know", "using", "use", "do",
-        "can", "get", "please", "help",
+        "can", "get", "please", "help", "show", "view",
     ]
     .iter()
     .cloned()
@@ -686,6 +737,12 @@ fn content_tokens(query: &str) -> std::collections::HashSet<String> {
 /// e.g. for query {create,vpc,aws}: "aws.ec2.create-vpc" → ec2/create/vpc overlap 2,
 /// extra 1 (ec2) → 5; "aws.apigatewayv2.create-vpc-link" → overlap 2, extra 2 → 4.
 fn path_match_score(cmd_path: &str, q_tokens: &std::collections::HashSet<String>) -> i32 {
+    // Root commands (no subcommand hierarchy) cannot be disambiguated by path matching.
+    // Without this guard, hyphenated roots like "git-standup" would gain +8 for the "git"
+    // token appearing in a git-related query, unfairly burying subcommands like "git.log".
+    if !cmd_path.contains('.') {
+        return 0;
+    }
     // Drop the first segment (the binary, e.g. "aws") — it's already how we got here.
     let after_binary = cmd_path.split_once('.').map(|x| x.1).unwrap_or(cmd_path);
     let tokens: Vec<String> = after_binary
@@ -698,7 +755,9 @@ fn path_match_score(cmd_path: &str, q_tokens: &std::collections::HashSet<String>
     }
     let overlap = tokens.iter().filter(|t| q_tokens.contains(*t)).count() as i32;
     let extra = tokens.len() as i32 - overlap;
-    3 * overlap - extra
+    // Use max(0, ...) to avoid negative scores: unmatched path tokens should not
+    // actively penalise otherwise-good commands (e.g. "git.log" for "git commit history").
+    (3 * overlap - extra).max(0)
 }
 
 pub fn search_commands(
@@ -878,9 +937,9 @@ mod tests {
         )
         .unwrap();
 
-        // Insert vector
-        let v = vec![0.1f32; 512];
-        let mut v_bytes = Vec::with_capacity(512 * 4);
+        // Insert vector (float32[384], no zero-padding)
+        let v = vec![0.1f32; 384];
+        let mut v_bytes = Vec::with_capacity(384 * 4);
         for &val in &v {
             v_bytes.extend_from_slice(&val.to_le_bytes());
         }
@@ -891,8 +950,8 @@ mod tests {
         )
         .unwrap();
 
-        // Search with query vector
-        let query_vec = vec![0.12f32; 512];
+        // Search with query vector (384-dim)
+        let query_vec = vec![0.12f32; 384];
         let res = search_commands(&conn, "missing_term", Some(&query_vec), 10).unwrap();
         assert!(!res.is_empty());
         assert_eq!(res[0].cmd_path, "knn");

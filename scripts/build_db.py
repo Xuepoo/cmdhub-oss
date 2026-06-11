@@ -34,7 +34,7 @@ from typing import Any
 
 VOCAB_GZ_PATH = str(Path(__file__).parent.parent / "cmdhub-cli/src/tokenizer/assets/vocab.txt.gz")
 MAX_SEQ_LEN = 512
-EMBED_DIM = 512  # storage dim (model output is 384, padded to 512)
+EMBED_DIM = 384  # BGE-micro-v2 native output dim; no zero-padding
 
 
 def _load_vocab(gz_path: str) -> dict[str, int]:
@@ -98,9 +98,8 @@ def _tokenize(vocab: dict[str, int], text: str) -> tuple[list[int], list[int]]:
 
 
 def _vec_to_bytes(vec: list[float]) -> bytes:
-    """Pack model output (384-dim) padded to 512 floats as LE f32 blob."""
-    padded = vec[:EMBED_DIM] + [0.0] * max(0, EMBED_DIM - len(vec))
-    return struct.pack(f"{EMBED_DIM}f", *padded)
+    """Pack model output (384-dim) as LE float32 bytes (EMBED_DIM * 4 bytes)."""
+    return struct.pack(f"{EMBED_DIM}f", *vec[:EMBED_DIM])
 
 
 # ── Worker (runs in subprocess, no shared state) ───────────────────────────
@@ -214,7 +213,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS commands_vec USING vec0(
     cmd_path TEXT PRIMARY KEY,
-    embedding float[512]
+    embedding float[384]
 );
 CREATE TABLE IF NOT EXISTS sync_meta (
     key TEXT PRIMARY KEY,

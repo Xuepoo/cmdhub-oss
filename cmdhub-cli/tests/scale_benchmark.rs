@@ -53,9 +53,9 @@ fn setup_benchmark_db(data_dir: &std::path::Path) -> Connection {
             .prepare("INSERT INTO commands_vec (cmd_path, embedding) VALUES (?1, ?2)")
             .unwrap();
 
-        // 512-dimension dummy vector bytes
-        let dummy_vec = vec![0.1f32; 512];
-        let mut vec_bytes = Vec::with_capacity(512 * 4);
+        // 384-dimension dummy vector bytes
+        let dummy_vec = vec![0.1f32; 384];
+        let mut vec_bytes = Vec::with_capacity(384 * 4);
         for &val in &dummy_vec {
             vec_bytes.extend_from_slice(&val.to_ne_bytes());
         }
@@ -101,8 +101,8 @@ fn test_hybrid_search_scale_performance() {
     let tmp = TempDir::new().unwrap();
     let conn = setup_benchmark_db(tmp.path());
 
-    // Prepare query vector (512 dimensions)
-    let query_vector = vec![0.1f32; 512];
+    // Prepare query vector (384 dimensions)
+    let query_vector = vec![0.1f32; 384];
 
     // Warm up the database and FTS indexes
     let _ = search_commands(&conn, "capability details", Some(&query_vector), 10).unwrap();
