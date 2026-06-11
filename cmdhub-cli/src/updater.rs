@@ -9,8 +9,13 @@ use sha2::{Digest, Sha256};
 use std::fs;
 
 pub async fn update_database(config: &Config, force: bool) -> Result<()> {
+    // Use connect + read (stall) timeouts rather than one total timeout: the database
+    // payload is hundreds of MB, so a total timeout aborts a healthy but slow download.
+    // A read timeout still aborts a genuinely stalled connection.
+    let to = std::time::Duration::from_secs(config.timeout_seconds);
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(config.timeout_seconds))
+        .connect_timeout(to)
+        .read_timeout(to)
         .build()?;
 
     let mut last_sync_time = 0i64;
