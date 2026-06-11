@@ -468,6 +468,7 @@ mod tests {
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
         };
 
         let json = serde_json::to_string(&contract).unwrap();
@@ -511,6 +512,7 @@ mod tests {
                 "https://raw.githubusercontent.com/mtoyoda/sl/master/install.sh".to_string(),
             ),
             source_url: Some("https://github.com/mtoyoda/sl".to_string()),
+            popularity: 0.8,
         };
 
         // Test node_name extraction
@@ -556,6 +558,7 @@ mod tests {
             example_template: db_arg.example_template,
             os_aliases: db_app.os_aliases,
             install_instructions: db_app.install_instructions,
+            popularity: db_app.popularity,
             docker_image: db_arg.docker_image,
             script_url: db_arg.script_url,
             source_url: db_arg.source_url,

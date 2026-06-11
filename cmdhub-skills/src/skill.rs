@@ -228,6 +228,7 @@ mod tests {
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
         };
 
         let contract2 = AciCommandContract {
@@ -243,6 +244,7 @@ mod tests {
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
         };
 
         let dummy_skill = DummySkill {
@@ -282,6 +284,7 @@ mod tests {
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
         };
 
         let sl_json_path = temp_dir.join("sl.json");
@@ -301,6 +304,7 @@ mod tests {
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
         };
         let git_json_path = temp_dir.join("git.json");
         let git_json_content = serde_json::to_string(&vec![contract_git]).unwrap();
@@ -321,6 +325,7 @@ mod tests {
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
         };
         let tar_json_path = sub_dir.join("tar.json");
         let tar_json_content = serde_json::to_string(&contract_tar).unwrap();

@@ -27,6 +27,7 @@ fn test_platform_install_command_resolution() {
         docker_image: None,
         script_url: None,
         source_url: None,
+        popularity: 0.0,
     };
 
     // 1. Ubuntu/Debian mapping (APT) with sudo check
@@ -101,6 +102,7 @@ fn test_platform_os_aliases_probing() {
         docker_image: None,
         script_url: None,
         source_url: None,
+        popularity: 0.0,
     };
 
     let mut config = Config::default();
@@ -175,7 +177,7 @@ fn test_cli_suggests_correct_install_command_via_config() {
     // 1. Mock Windows OS in config.toml
     let config_path = data_dir.join("cmdhub/config.toml");
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-    std::fs::write(&config_path, "api_url = \"https://api.cmdhub.xyz\"\npublic_key = \"\"\ntimeout_seconds = 30\n[install]\nos = \"windows\"\n").unwrap();
+    std::fs::write(&config_path, "api_url = \"https://api.cmdhub.org\"\npublic_key = \"\"\ntimeout_seconds = 30\n[install]\nos = \"windows\"\n").unwrap();
 
     // Run CLI search
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
@@ -191,7 +193,7 @@ fn test_cli_suggests_correct_install_command_via_config() {
     assert_eq!(arr[0]["install_command"], "scoop install cliplatform");
 
     // 2. Mock macOS OS in config.toml
-    std::fs::write(&config_path, "api_url = \"https://api.cmdhub.xyz\"\npublic_key = \"\"\ntimeout_seconds = 30\n[install]\nos = \"macos\"\n").unwrap();
+    std::fs::write(&config_path, "api_url = \"https://api.cmdhub.org\"\npublic_key = \"\"\ntimeout_seconds = 30\n[install]\nos = \"macos\"\n").unwrap();
 
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
     cmd.env("XDG_DATA_HOME", &data_dir)
