@@ -171,6 +171,7 @@ pub fn search_cascading(
     } else {
         or_query.clone()
     };
+    let cand_query = processed_query.clone();
 
     // 1. Fast exact-match check (LOWER check for path/name)
     let trimmed_query = query.trim().to_lowercase();
@@ -332,7 +333,7 @@ pub fn search_cascading(
 
         let app_rows = app_stmt.query_map(
             rusqlite::named_params! {
-                ":query": &processed_query,
+                ":query": &cand_query,
                 ":query_vector": vb,
                 ":pop_w_rank": pop_w_rank,
                 ":pop_w_val": pop_w_val,
@@ -375,7 +376,7 @@ pub fn search_cascading(
 
         let app_rows = app_stmt.query_map(
             rusqlite::named_params! {
-                ":query": &processed_query,
+                ":query": &cand_query,
                 ":pop_w_rank": pop_w_rank,
                 ":pop_w_val": pop_w_val,
             },
@@ -404,10 +405,10 @@ pub fn search_cascading(
             FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
             LIMIT 5",
         )?;
-        let fts_app_rows = fts_only_stmt.query_map(
-            rusqlite::named_params! { ":query": &processed_query },
-            |row| row.get::<_, String>(0),
-        )?;
+        let fts_app_rows = fts_only_stmt
+            .query_map(rusqlite::named_params! { ":query": &cand_query }, |row| {
+                row.get::<_, String>(0)
+            })?;
         for app_id in fts_app_rows.flatten() {
             if !top_apps.contains(&app_id) {
                 top_apps.push(app_id);

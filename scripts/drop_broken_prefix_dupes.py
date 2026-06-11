@@ -80,6 +80,12 @@ def main() -> None:
         qs = ",".join("?" * len(ids))
         c.execute(f"DELETE FROM arguments WHERE app_id IN ({qs})", ids)
         c.execute(f"DELETE FROM apps WHERE app_id IN ({qs})", ids)
+        # Keep standalone FTS5 / vector tables in sync (orphans skew bm25 and waste candidates).
+        for tbl in ("apps_fts", "commands_vec"):
+            try:
+                c.execute(f"DELETE FROM {tbl} WHERE cmd_path NOT IN (SELECT cmd_path FROM arguments)")
+            except Exception:
+                pass
         c.commit()
         c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         c.commit()

@@ -43,6 +43,16 @@ def _pkg_from_app_id(app_id: str) -> str:
     return app_id.rsplit(".", 1)[-1]
 
 
+def _drop_orphans(cur) -> None:
+    """Delete apps_fts / commands_vec rows whose cmd_path no longer exists in arguments."""
+    for tbl in ("apps_fts", "commands_vec"):
+        try:
+            cur.execute(
+                f"DELETE FROM {tbl} WHERE cmd_path NOT IN (SELECT cmd_path FROM arguments)")
+        except Exception:
+            pass
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
@@ -88,6 +98,9 @@ def main() -> None:
     if mal_paths:
         qs = ",".join("?" * len(mal_paths))
         cur.execute(f"DELETE FROM arguments WHERE cmd_path IN ({qs})", mal_paths)
+    # Keep the FTS5 and vector tables in sync: they are standalone tables, so deleting from
+    # arguments leaves orphan rows that waste candidate-pool slots and skew bm25 statistics.
+    _drop_orphans(cur)
     c.commit()
 
     apps = cur.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
