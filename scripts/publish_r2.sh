@@ -27,9 +27,18 @@ put() { # key file content-type cache-control
     --content-type="$3" --cache-control="$4" --remote
 }
 
-# Immutable payloads first (so the manifest never points at a missing object), pointer last.
-put "db/cmdhub.db.zst" "$DIR/cmdhub.db.zst" "application/zstd"        "public, max-age=31536000, immutable"
-put "db/cmdhub.db.sig" "$DIR/cmdhub.db.sig" "application/octet-stream" "public, max-age=31536000, immutable"
-put "db/update"        "$DIR/manifest.json" "application/json"         "public, max-age=300"
+# Content-addressed keys come from the manifest the signer wrote (db/cmdhub-<sha>.db.zst).
+# A new release is a new path no edge has cached, so the immutable long-TTL never bites.
+DB_URL=$(python3 -c "import json,sys;print(json.load(open('$DIR/manifest.json'))['db_url'])")
+SIG_URL=$(python3 -c "import json,sys;print(json.load(open('$DIR/manifest.json'))['sig_url'])")
+DB_KEY="db/$(basename "$DB_URL")"
+SIG_KEY="db/$(basename "$SIG_URL")"
 
-echo "[r2] done. verify: curl -s https://cdn.cmdhub.org/db/update"
+# Immutable payloads first (so the manifest never points at a missing object), pointer last.
+# Manifest is the FIXED-key, SHORT-cache version pointer — keep its TTL low so a new release
+# propagates fast (it's the only object that reuses its key).
+put "$DB_KEY"   "$DIR/$(basename "$DB_URL")"  "application/zstd"        "public, max-age=31536000, immutable"
+put "$SIG_KEY"  "$DIR/$(basename "$SIG_URL")" "application/octet-stream" "public, max-age=31536000, immutable"
+put "db/update" "$DIR/manifest.json"          "application/json"         "public, max-age=60"
+
+echo "[r2] done. db=$DB_KEY  verify: curl -s https://cdn.cmdhub.org/db/update"

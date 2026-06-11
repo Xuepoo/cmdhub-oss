@@ -23,11 +23,19 @@ import sys
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-# Stable CDN object keys so the download URLs never change between releases (version/etag
-# in the manifest drive cache invalidation, not the path).
-DB_KEY = "db/cmdhub.db.zst"
-SIG_KEY = "db/cmdhub.db.sig"
+# Content-addressed object keys. The payload (zst/sig) is served with a long immutable
+# cache, so reusing a fixed key across releases lets a stale Cloudflare edge cache shadow
+# the new upload forever (immutable means the edge never revalidates — a real outage we hit
+# 2026-06-11). Embedding the sha256 in the key means every release writes a NEW path that no
+# edge has cached, while old paths stay valid (rollback-friendly). Only the manifest keeps a
+# FIXED key + SHORT cache — it is the version pointer the CLI polls.
 MANIFEST_KEY = "db/update"  # served at {cdn}/db/update (the CLI's update endpoint)
+
+
+def _content_keys(sha_hex: str) -> tuple[str, str]:
+    """Return (db_key, sig_key) addressed by the payload's sha256."""
+    short = sha_hex[:16]
+    return f"db/cmdhub-{short}.db.zst", f"db/cmdhub-{short}.db.sig"
 
 
 def main() -> None:
@@ -54,9 +62,10 @@ def main() -> None:
     # Fail loudly if the local key does not match the public key the CLI ships.
     sk.public_key().verify(signature, digest)
 
+    db_key, sig_key = _content_keys(sha_hex)
     os.makedirs(a.out_dir, exist_ok=True)
-    db_out = os.path.join(a.out_dir, os.path.basename(DB_KEY))
-    sig_out = os.path.join(a.out_dir, os.path.basename(SIG_KEY))
+    db_out = os.path.join(a.out_dir, os.path.basename(db_key))
+    sig_out = os.path.join(a.out_dir, os.path.basename(sig_key))
     man_out = os.path.join(a.out_dir, "manifest.json")
     shutil.copyfile(a.zst, db_out)
     open(sig_out, "wb").write(signature)
@@ -64,8 +73,8 @@ def main() -> None:
     manifest = {
         "version": a.version,
         "etag": sha_hex,
-        "db_url": f"{a.cdn}/{DB_KEY}",
-        "sig_url": f"{a.cdn}/{SIG_KEY}",
+        "db_url": f"{a.cdn}/{db_key}",
+        "sig_url": f"{a.cdn}/{sig_key}",
         "sha256": sha_hex,
         "mode": "full",
         "new_sync_time": int(dt.datetime.now(dt.timezone.utc).timestamp()),
@@ -76,7 +85,7 @@ def main() -> None:
     print(f"[sign] signature ({len(signature)}B) -> {sig_out}")
     print(f"[sign] db   -> {db_out}  ({len(blob)/1e6:.1f} MB)")
     print(f"[sign] manifest -> {man_out}")
-    print(f"[sign] R2 upload keys: {DB_KEY}, {SIG_KEY}, {MANIFEST_KEY}")
+    print(f"[sign] R2 upload keys: {db_key}, {sig_key}, {MANIFEST_KEY}")
 
 
 if __name__ == "__main__":

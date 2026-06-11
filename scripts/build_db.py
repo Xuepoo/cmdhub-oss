@@ -613,7 +613,7 @@ def _compress(db_path: str, apps: list[dict], total: int) -> None:
         "size_bytes": len(compressed),
         "app_count": len(apps),
         "command_count": total,
-        "built_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "built_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     }
     manifest_path = db_path + ".manifest.json"
     with open(manifest_path, "w") as f:
