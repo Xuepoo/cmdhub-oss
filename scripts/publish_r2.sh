@@ -20,6 +20,8 @@ BUCKET="${1:?usage: publish_r2.sh <bucket-name> [release-dir]}"
 DIR="${2:-/tmp/cmdhub_release}"
 export HTTPS_PROXY="${HTTPS_PROXY:-http://127.0.0.1:1080}"
 R2_PROFILE="${R2_PROFILE:-r2}"
+# R2 only accepts auto/wnam/enam/... — override any AWS_REGION the shell exports for real AWS.
+R2_REGION="${R2_REGION:-auto}"
 
 # Content-addressed keys + local filenames come from the manifest the signer wrote.
 DB_URL=$(python3 -c "import json;print(json.load(open('$DIR/manifest.json'))['db_url'])")
@@ -33,7 +35,7 @@ done
 # Pick an upload backend. aws s3 (if the r2 profile has working creds) is preferred: native
 # multipart, no post-upload hang. wrangler is the fallback.
 BACKEND="wrangler"
-if command -v aws >/dev/null 2>&1 && aws --profile "$R2_PROFILE" s3 ls "s3://$BUCKET" >/dev/null 2>&1; then
+if command -v aws >/dev/null 2>&1 && aws --region "$R2_REGION" --profile "$R2_PROFILE" s3 ls "s3://$BUCKET" >/dev/null 2>&1; then
   BACKEND="aws"
 fi
 echo "[r2] backend: $BACKEND  bucket: $BUCKET"
@@ -41,7 +43,7 @@ echo "[r2] backend: $BACKEND  bucket: $BUCKET"
 put() { # key file content-type cache-control
   echo "[r2] put $1"
   if [ "$BACKEND" = "aws" ]; then
-    aws --profile "$R2_PROFILE" s3 cp "$2" "s3://$BUCKET/$1" \
+    aws --region "$R2_REGION" --profile "$R2_PROFILE" s3 cp "$2" "s3://$BUCKET/$1" \
       --content-type "$3" --cache-control "$4" --only-show-errors
   else
     # wrangler may be killed by timeout after a successful upload; tolerate non-zero exit.
