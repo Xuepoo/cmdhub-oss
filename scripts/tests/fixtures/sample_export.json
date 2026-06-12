@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {"app_id": "org.gnu.coreutils.rm", "name": "rm", "os_aliases": "rm", "install_instructions": "apt install coreutils", "popularity": 0.9},
+    {"app_id": "ai.openclaw.cli", "name": "openclaw", "os_aliases": null, "install_instructions": null, "popularity": 0.5},
+    {"app_id": "org.npmjs.rm", "name": "rm", "os_aliases": null, "install_instructions": "npm i -g rm", "popularity": 0.3}
+  ],
+  "arguments": [
+    {"cmd_path": "rm", "app_id": "org.gnu.coreutils.rm", "node_name": "rm", "node_type": "root", "description": "remove files or directories", "risk_level": "dangerous", "example_template": "rm {{file}}", "docker_image": null, "script_url": null, "source_url": "https://github.com/coreutils/coreutils", "topics": "coreutils delete filesystem remove"},
+    {"cmd_path": "rm.-r", "app_id": "org.gnu.coreutils.rm", "node_name": "-r", "node_type": "sub", "description": "remove directories and their contents recursively", "risk_level": "dangerous", "example_template": "rm -r {{dir}}", "docker_image": null, "script_url": null, "source_url": null, "topics": "recursive directory"},
+    {"cmd_path": "openclaw", "app_id": "ai.openclaw.cli", "node_name": "openclaw", "node_type": "root", "description": "Send messages through OpenClaw", "risk_level": "safe", "example_template": "openclaw {{cmd}}", "docker_image": null, "script_url": null, "source_url": "https://github.com/openclaw/cli", "topics": "openclaw messaging cli"},
+    {"cmd_path": "rm", "app_id": "org.npmjs.rm", "node_name": "rm", "node_type": "root", "description": "npm rm package shortcut", "risk_level": "safe", "example_template": "rm {{pkg}}", "docker_image": null, "script_url": null, "source_url": "https://github.com/npm/rm", "topics": "npm package"}
+  ]
+}
