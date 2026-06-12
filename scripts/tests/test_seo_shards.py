@@ -85,3 +85,27 @@ def test_build_robots():
     txt = seo_shards.build_robots("https://cmdhub.org")
     assert "Sitemap: https://cmdhub.org/sitemaps/sitemap-index.xml" in txt
     assert "Allow: /c/" in txt
+
+import subprocess
+
+
+def test_cli_end_to_end(tmp_path):
+    out = tmp_path / "out"
+    fixture = Path(__file__).parent / "fixtures" / "sample_export.json"
+    intents = tmp_path / "intents.jsonl"
+    intents.write_text(json.dumps({"app_id": "org.gnu.coreutils.rm", "intents": ["delete a folder"]}) + "\n")
+    script = Path(__file__).resolve().parents[1] / "gen_seo_shards.py"
+    subprocess.run(
+        ["python3", str(script), "--export", str(fixture), "--intents", str(intents),
+         "--out", str(out), "--base-url", "https://cmdhub.org", "--build-id", "testbuild"],
+        check=True,
+    )
+    shard = json.loads((out / "registry" / "org.gnu.coreutils.rm.json").read_text())
+    assert shard["intents"] == ["delete a folder"]
+    assert shard["name"] == "rm"
+    manifest = json.loads((out / "registry" / "manifest.json").read_text())
+    assert manifest["build_id"] == "testbuild"
+    assert manifest["count"] == 3
+    assert (out / "registry" / "index.json").exists()
+    assert (out / "sitemaps" / "sitemap-index.xml").exists()
+    assert (out / "robots.txt").exists()
