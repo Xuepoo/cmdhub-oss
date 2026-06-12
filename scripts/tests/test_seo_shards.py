@@ -63,3 +63,25 @@ def test_build_index_sorted_by_popularity_desc():
 def test_build_manifest():
     m = seo_shards.build_manifest(build_id="20260612", count=3, generated_at="2026-06-12T00:00:00Z")
     assert m == {"build_id": "20260612", "count": 3, "generated_at": "2026-06-12T00:00:00Z"}
+
+import gzip
+
+
+def test_build_sitemaps_splits_and_gzips():
+    index = seo_shards.build_index(FIXTURE["apps"])
+    out = seo_shards.build_sitemaps(index, base_url="https://cmdhub.org", lastmod="2026-06-12", per_file=2)
+    # 3 urls, per_file=2 -> 2 gzipped parts + 1 index
+    assert sorted(out.keys()) == ["sitemap-1.xml.gz", "sitemap-2.xml.gz", "sitemap-index.xml"]
+    part1 = gzip.decompress(out["sitemap-1.xml.gz"]).decode()
+    assert "<loc>https://cmdhub.org/c/org.gnu.coreutils.rm</loc>" in part1
+    assert part1.count("<url>") == 2
+    idx = out["sitemap-index.xml"]
+    assert isinstance(idx, str)
+    assert "https://cmdhub.org/sitemaps/sitemap-1.xml.gz" in idx
+    assert "https://cmdhub.org/sitemaps/sitemap-2.xml.gz" in idx
+
+
+def test_build_robots():
+    txt = seo_shards.build_robots("https://cmdhub.org")
+    assert "Sitemap: https://cmdhub.org/sitemaps/sitemap-index.xml" in txt
+    assert "Allow: /c/" in txt

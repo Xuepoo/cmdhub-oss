@@ -7,6 +7,10 @@ each app has one root argument (node_type == 'root', cmd_path without a dot) plu
 from __future__ import annotations
 
 
+import gzip
+from xml.sax.saxutils import escape
+
+
 def _topics(raw: str | None) -> list[str]:
     return (raw or "").split()
 
@@ -60,3 +64,48 @@ def build_index(apps: list[dict]) -> list[dict]:
 
 def build_manifest(build_id: str, count: int, generated_at: str) -> dict:
     return {"build_id": build_id, "count": count, "generated_at": generated_at}
+
+
+def _url_entry(app_id: str, popularity: float, base_url: str, lastmod: str) -> str:
+    loc = escape(f"{base_url}/c/{app_id}")
+    # popularity (0..1) -> sitemap priority (0.0..1.0), one decimal, deterministic
+    priority = f"{min(max(popularity, 0.0), 1.0):.1f}"
+    return (
+        f"  <url><loc>{loc}</loc>"
+        f"<lastmod>{lastmod}</lastmod>"
+        f"<priority>{priority}</priority></url>"
+    )
+
+
+def build_sitemaps(index: list[dict], base_url: str, lastmod: str, per_file: int = 50000) -> dict:
+    """Return {filename: bytes|str}. Parts are gzipped bytes; the index is a str."""
+    out: dict = {}
+    parts = [index[i : i + per_file] for i in range(0, len(index), per_file)] or [[]]
+    for n, chunk in enumerate(parts, start=1):
+        body = "\n".join(_url_entry(e["app_id"], e["popularity"], base_url, lastmod) for e in chunk)
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            f"{body}\n</urlset>\n"
+        )
+        out[f"sitemap-{n}.xml.gz"] = gzip.compress(xml.encode("utf-8"), mtime=0)
+    refs = "\n".join(
+        f"  <sitemap><loc>{escape(base_url)}/sitemaps/sitemap-{n}.xml.gz</loc>"
+        f"<lastmod>{lastmod}</lastmod></sitemap>"
+        for n in range(1, len(parts) + 1)
+    )
+    out["sitemap-index.xml"] = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{refs}\n</sitemapindex>\n"
+    )
+    return out
+
+
+def build_robots(base_url: str) -> str:
+    return (
+        "User-agent: *\n"
+        "Allow: /c/\n"
+        "Allow: /commands/\n"
+        f"Sitemap: {base_url}/sitemaps/sitemap-index.xml\n"
+    )
