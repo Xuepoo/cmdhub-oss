@@ -49,3 +49,17 @@ def test_build_shard_handles_null_install_and_no_intents():
     assert shard["install"] == {"os_aliases": None, "instructions": None}
     assert shard["intents"] == []
     assert shard["topics"] == ["openclaw", "messaging", "cli"]
+
+def test_build_index_sorted_by_popularity_desc():
+    index = seo_shards.build_index(FIXTURE["apps"])
+    assert [e["app_id"] for e in index] == [
+        "org.gnu.coreutils.rm",  # 0.9
+        "ai.openclaw.cli",       # 0.5
+        "org.npmjs.rm",          # 0.3
+    ]
+    assert index[0] == {"app_id": "org.gnu.coreutils.rm", "name": "rm", "popularity": 0.9}
+
+
+def test_build_manifest():
+    m = seo_shards.build_manifest(build_id="20260612", count=3, generated_at="2026-06-12T00:00:00Z")
+    assert m == {"build_id": "20260612", "count": 3, "generated_at": "2026-06-12T00:00:00Z"}

@@ -47,3 +47,16 @@ def build_shard(app: dict, args: list[dict], intents: list[str], generated_at: s
         "tree": tree,
         "generated_at": generated_at,
     }
+
+def build_index(apps: list[dict]) -> list[dict]:
+    """Compact index for sitemaps + /commands aggregation, popularity desc, stable tiebreak."""
+    rows = [
+        {"app_id": a["app_id"], "name": a["name"], "popularity": a.get("popularity", 0.0)}
+        for a in apps
+    ]
+    rows.sort(key=lambda r: (-r["popularity"], r["app_id"]))
+    return rows
+
+
+def build_manifest(build_id: str, count: int, generated_at: str) -> dict:
+    return {"build_id": build_id, "count": count, "generated_at": generated_at}
