@@ -260,6 +260,69 @@ def _is_noise_command(cmd_path: str) -> bool:
     return "completion" in parts[1:] or "completions" in parts[1:]
 
 
+# ── Canonicalization & cross-source dedup ───────────────────────────────────
+# Crawled package names often encode a SUBCOMMAND as a fused tool name
+# ("podman-images" is really `podman images`), and the same tool arrives from
+# several sources under different app_ids (io.podman.*, com.github.*, org.archlinux.*).
+# We merge only unambiguous duplicates: same canonical tool + same leaf command.
+# Probe-verified rows win over LLM-inferred ones; dropped rows donate their topics.
+
+# Compound tools that look like "<base>-<word>" but are SEPARATE binaries, not a
+# fused subcommand of <base>. Conservative blocklist — extend as real data demands.
+_COMPOUND_TOOLS = {"compose", "machine", "buildx", "swarm", "creds", "desktop", "cli"}
+# Fused-subcommand suffixes seen in crawled package names: "podman-image(s)" == podman image.
+_FUSED_SUFFIXES = ("-image", "-images", "-container", "-containers", "-volume", "-volumes",
+                   "-network", "-networks", "-pod", "-pods", "-system")
+
+
+def _canonical_tool(root: str) -> str:
+    """Canonical binary name for a command's ROOT segment. Collapses crawled
+    fused-subcommand names (podman-images -> podman) but never compound tools
+    (podman-compose stays podman-compose)."""
+    r = root.strip().lower()
+    if "-" in r and r.split("-", 1)[1] in _COMPOUND_TOOLS:
+        return r  # compound tool: keep distinct
+    for suf in _FUSED_SUFFIXES:
+        if r.endswith(suf):
+            return r[: -len(suf)]
+    return r
+
+
+def _canonicalize_and_dedup(arguments: list[dict], apps: list[dict]) -> list[dict]:
+    """Merge unambiguous cross-source duplicates: same canonical tool + same leaf
+    command name. Keep the probe row (else highest-popularity); union the dropped
+    rows' topics into the kept row so search recall survives the merge. Runs BEFORE
+    embedding so vectors are computed on the final merged text. Conservative by
+    design: distinct leaves / distinct tools are never merged."""
+    pop = {a["app_id"]: float(a.get("popularity") or 0.0) for a in apps}
+    groups: dict[tuple, list[dict]] = {}
+    for a in arguments:
+        root = a["cmd_path"].split(".", 1)[0]
+        leaf = a["cmd_path"].rsplit(".", 1)[-1].lower()
+        groups.setdefault((_canonical_tool(root), leaf), []).append(a)
+
+    out: list[dict] = []
+    merged = 0
+    for rows in groups.values():
+        if len(rows) == 1:
+            out.append(rows[0])
+            continue
+        rows.sort(key=lambda r: (r.get("provenance") != "probe", -pop.get(r["app_id"], 0.0)))
+        keep = rows[0]
+        topic_set: list[str] = []
+        for r in rows:
+            for t in (r.get("topics") or "").split():
+                if t not in topic_set:
+                    topic_set.append(t)
+        keep["topics"] = " ".join(topic_set)
+        out.append(keep)
+        merged += len(rows) - 1
+    if merged:
+        print(f"[build-db] Canonicalized/merged {merged} duplicate commands",
+              file=sys.stderr, flush=True)
+    return out
+
+
 def _default_overrides_path() -> str:
     """Repo-local default: <repo>/data/search_overrides.json. Override via
     CMDHUB_BUILD_OVERRIDES env or the --overrides CLI flag (cloud-native injection)."""
@@ -397,6 +460,8 @@ def build(
         print(f"[build-db] Dropped {noise} help/version/completion noise commands", file=sys.stderr, flush=True)
     # Apply build-time overrides before embedding so corrected text reaches FTS + vectors.
     arguments = _apply_overrides(arguments, apps, overrides_path)
+    # Merge cross-source duplicates BEFORE embedding so vectors reflect merged text (§4.3).
+    arguments = _canonicalize_and_dedup(arguments, apps)
 
     total = len(arguments)
     print(f"[build-db] {len(apps)} apps, {total} arguments", file=sys.stderr, flush=True)
