@@ -116,7 +116,7 @@ fn test_concurrency_wal_mode_reader_safety() {
         .arg("search")
         .arg("TxApp");
     let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let _stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     // Since TxApp has no ACI command, it might not show in search_commands unless it matches command name.
     // Let's directly query the DB or insert a command for TxApp to verify.
     let db_path = data_dir.join("cmdhub").join("cmdhub.db");

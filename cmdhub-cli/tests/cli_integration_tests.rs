@@ -1,4 +1,3 @@
-use cmdhub_cli::config::OFFICIAL_PUBLIC_KEY;
 use cmdhub_cli::config::{load_or_create_config, resolve_config_path, Config};
 use cmdhub_cli::db::{init_db, open_db, search_commands};
 use cmdhub_cli::runner::{get_command_by_path, run_command};
@@ -341,7 +340,7 @@ fn test_skills_integration() {
         script_url: None,
         source_url: None,
         popularity: 0.0,
-        };
+    };
 
     let json_content = serde_json::to_string(&contract_custom).unwrap();
     std::fs::write(skills_dir.join("custom.json"), json_content).unwrap();
@@ -654,6 +653,7 @@ async fn test_auto_model_download() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_client_incremental_sync_deletions_and_updates() {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};

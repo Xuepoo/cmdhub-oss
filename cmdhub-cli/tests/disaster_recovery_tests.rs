@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::Mutex;
 use std::thread;
 use tempfile::TempDir;
@@ -348,7 +348,7 @@ fn test_update_incremental_mid_download_rollback() {
     hasher.update(&compressed);
     let hash_result: [u8; 32] = hasher.finalize().into();
     let signature = signing_key.sign(&hash_result);
-    let sig_bytes = signature.to_bytes().to_vec();
+    let _sig_bytes = signature.to_bytes().to_vec();
     let sha256_hex = hash_result
         .iter()
         .map(|b| format!("{:02x}", b))
