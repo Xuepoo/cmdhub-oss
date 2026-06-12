@@ -36,6 +36,29 @@ def test_dedup_prefers_probe_and_unions_topics():
     assert any(a["node_name"] == "images" for a in out)  # compose NOT merged away
 
 
+def test_canonical_path_unfolds_fused_roots_and_stems_plurals():
+    assert build_db._canonical_path("podman-image.prune") == "podman.image.prune"
+    assert build_db._canonical_path("podman-images.filter") == "podman.image.filter"
+    assert build_db._canonical_path("podman.image.prune") == "podman.image.prune"
+    assert build_db._canonical_path("podman-compose.images") == "podman-compose.image"
+    assert build_db._canonical_path("git.log") == "git.log"
+
+
+def test_dedup_never_merges_distinct_subtrees_with_same_leaf():
+    # image.prune and container.prune are BOTH real podman commands sharing the leaf
+    # "prune" — the full-path key must keep them apart (regression for the leaf-key bug).
+    args = [
+        {"cmd_path": "podman.image.prune", "app_id": "a", "node_name": "prune",
+         "description": "remove unused images", "risk_level": "dangerous",
+         "topics": "", "provenance": "inferred"},
+        {"cmd_path": "podman.container.prune", "app_id": "a", "node_name": "prune",
+         "description": "remove stopped containers", "risk_level": "dangerous",
+         "topics": "", "provenance": "inferred"},
+    ]
+    out = build_db._canonicalize_and_dedup(args, apps=[])
+    assert len(out) == 2
+
+
 def test_dedup_keeps_distinct_subcommands_apart():
     args = [
         {"cmd_path": "git.log", "app_id": "g", "node_name": "log",

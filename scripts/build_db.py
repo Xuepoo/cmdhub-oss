@@ -288,18 +288,33 @@ def _canonical_tool(root: str) -> str:
     return r
 
 
+def _canonical_path(cmd_path: str) -> str:
+    """Canonical identity of a command across crawl sources. A fused-subcommand root is
+    unfolded into a real path segment (podman-image.prune → podman.image.prune) and
+    segments are singular-stemmed for the KEY ONLY (podman.images ~ podman.image — real
+    CLIs alias these). Compound tools (podman-compose) are preserved verbatim, and the
+    full path keeps distinct subcommands apart (image.prune ≠ container.prune)."""
+    parts = cmd_path.lower().split(".")
+    root, rest = parts[0], parts[1:]
+    canon_root = _canonical_tool(root)
+    if canon_root != root:
+        # The stripped fused suffix becomes a real path segment ("podman-images" → "images").
+        rest = [root[len(canon_root) + 1:]] + rest
+    def stem(w: str) -> str:
+        return w[:-1] if w.endswith("s") and len(w) > 3 else w
+    return ".".join([canon_root] + [stem(w) for w in rest])
+
+
 def _canonicalize_and_dedup(arguments: list[dict], apps: list[dict]) -> list[dict]:
-    """Merge unambiguous cross-source duplicates: same canonical tool + same leaf
-    command name. Keep the probe row (else highest-popularity); union the dropped
-    rows' topics into the kept row so search recall survives the merge. Runs BEFORE
-    embedding so vectors are computed on the final merged text. Conservative by
-    design: distinct leaves / distinct tools are never merged."""
+    """Merge unambiguous cross-source duplicates: identical canonical FULL path.
+    Keep the probe row (else highest-popularity); union the dropped rows' topics into
+    the kept row so search recall survives the merge. Runs BEFORE embedding so vectors
+    are computed on the final merged text. Conservative by design: distinct
+    subcommands / distinct tools are never merged."""
     pop = {a["app_id"]: float(a.get("popularity") or 0.0) for a in apps}
-    groups: dict[tuple, list[dict]] = {}
+    groups: dict[str, list[dict]] = {}
     for a in arguments:
-        root = a["cmd_path"].split(".", 1)[0]
-        leaf = a["cmd_path"].rsplit(".", 1)[-1].lower()
-        groups.setdefault((_canonical_tool(root), leaf), []).append(a)
+        groups.setdefault(_canonical_path(a["cmd_path"]), []).append(a)
 
     out: list[dict] = []
     merged = 0
