@@ -372,6 +372,77 @@ def check_high_value_tool_depth(conn: sqlite3.Connection) -> CheckResult:
     return r
 
 
+def check_fabricated_examples(rows: list[dict]) -> list[str]:
+    """Flag LLM-inferred rows whose example_template contradicts their own cmd_path —
+    the signature of a fabricated contract (e.g. contract root `podman-images` but the
+    example invokes plain `podman`, or the example uses a subcommand word that is not
+    in the contract path). Probe rows are ground truth and never flagged. Warn-only:
+    heuristics must not fail the build."""
+    warns: list[str] = []
+    for r in rows:
+        if (r.get("provenance") or "inferred") != "inferred":
+            continue
+        ex = (r.get("example_template") or "").strip()
+        if not ex:
+            continue
+        cmd_path = r["cmd_path"]
+        tokens = ex.split()
+        if tokens and tokens[0] == "sudo":
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+
+        # 1. The example must invoke the contract's own binary (root segment).
+        root = cmd_path.split(".", 1)[0].lower()
+        first = tokens[0].lower()
+        if first not in (root, f"./{root}"):
+            warns.append(
+                f"{cmd_path}: inferred example invokes '{tokens[0]}' but the contract "
+                f"root is '{root}' (example: {ex})"
+            )
+            continue
+
+        # 2. For subcommand contracts, the example's bare words after the binary must
+        #    follow the contract's own path segments — a stray word there is usually a
+        #    fabricated subcommand. Root contracts are exempt (demoing a sub is fine).
+        if "." not in cmd_path:
+            continue
+        path_words = [seg.lower() for seg in cmd_path.split(".")[1:]]
+        for i, t in enumerate(tokens[1:]):
+            if t.startswith("-") or "{{" in t or "=" in t:
+                break
+            if i >= len(path_words) or path_words[i] != t.lower():
+                warns.append(
+                    f"{cmd_path}: inferred example subcommand '{t}' not in the "
+                    f"contract path (example: {ex})"
+                )
+                break
+    return warns
+
+
+def check_fabrication_heuristics(conn: sqlite3.Connection) -> CheckResult:
+    """Warn-level scan for fabricated inferred examples (see check_fabricated_examples)."""
+    r = CheckResult("fabricated_examples")
+    cols = {row["name"] for row in query(conn, "PRAGMA table_info(arguments)")}
+    prov_sel = "provenance" if "provenance" in cols else "'inferred' AS provenance"
+    rows = [
+        dict(row)
+        for row in query(
+            conn,
+            f"SELECT cmd_path, node_name, example_template, {prov_sel} FROM arguments "
+            "WHERE example_template IS NOT NULL AND example_template != ''",
+        )
+    ]
+    warns = check_fabricated_examples(rows)
+    # Warn-only by design; cap the printout so a large registry stays readable.
+    for w in warns[:50]:
+        r.warn(w)
+    if len(warns) > 50:
+        r.warn(f"... and {len(warns) - 50} more suspected fabricated examples")
+    r.ok_n(len(rows) - len(warns))
+    return r
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def run_all_checks(db_path: str) -> dict[str, Any]:
@@ -397,6 +468,7 @@ def run_all_checks(db_path: str) -> dict[str, Any]:
         check_subcommand_counts(conn),
         check_fts_vec_consistency(conn),
         check_high_value_tool_depth(conn),
+        check_fabrication_heuristics(conn),
     ]
 
     conn.close()
