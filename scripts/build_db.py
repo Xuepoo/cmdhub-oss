@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS arguments (
     script_url TEXT,
     source_url TEXT,
     topics TEXT,
+    provenance TEXT NOT NULL DEFAULT 'inferred',
     FOREIGN KEY(app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
@@ -510,7 +511,7 @@ def build(
         conn.executemany(
             "INSERT OR REPLACE INTO arguments "
             "(cmd_path,app_id,node_name,node_type,description,risk_level,"
-            " example_template,docker_image,script_url,source_url,topics) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " example_template,docker_image,script_url,source_url,topics,provenance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     a["cmd_path"], a["app_id"], a["node_name"],
@@ -521,6 +522,7 @@ def build(
                     a.get("example_template"),
                     a.get("docker_image"), a.get("script_url"), a.get("source_url"),
                     a.get("topics"),
+                    a.get("provenance") or "inferred",
                 )
                 for a in batch
             ],
@@ -575,6 +577,9 @@ def build(
     conn.commit()
     print(f"[build-db] Merged install_instructions into {merged} official-source apps", file=sys.stderr, flush=True)
 
+    conn.execute(
+        "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('schema_version', '2')",
+    )
     conn.execute(
         "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_sync_time', ?)",
         (str(int(time.time())),),

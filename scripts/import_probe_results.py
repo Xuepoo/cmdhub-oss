@@ -129,6 +129,12 @@ def import_probe_dir(probe_dir: Path, db_path: Path, packages_toml: Path | None 
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # Probe data is parsed from real --help → mark it provenance='probe'. Crawl adapters
+    # leave the column at its 'inferred' default. Add the column if an older claw DB lacks it.
+    try:
+        conn.execute("ALTER TABLE arguments ADD COLUMN provenance TEXT NOT NULL DEFAULT 'inferred'")
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
     imported_apps = 0
     imported_args = 0
@@ -197,8 +203,8 @@ def import_probe_dir(probe_dir: Path, db_path: Path, packages_toml: Path | None 
 
             conn.execute("""
                 INSERT OR IGNORE INTO arguments
-                    (app_id, cmd_path, node_name, node_type, description, risk_level)
-                VALUES (?, ?, ?, ?, ?, 'safe')
+                    (app_id, cmd_path, node_name, node_type, description, risk_level, provenance)
+                VALUES (?, ?, ?, ?, ?, 'safe', 'probe')
             """, (app_id, cmd_path, node_name, node_type, page_desc or description))
             if conn.execute("SELECT changes()").fetchone()[0] > 0:
                 imported_args += 1

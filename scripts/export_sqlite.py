@@ -34,8 +34,11 @@ def export(db_path: Path, out_path: Path) -> None:
             f"SELECT app_id, name, os_aliases, install_instructions, {pop_sel} FROM apps")
     ]
 
-    has_topics = any(c[1] == "topics" for c in conn.execute("PRAGMA table_info(arguments)"))
-    topics_sel = "topics" if has_topics else "NULL AS topics"
+    arg_cols = {c[1] for c in conn.execute("PRAGMA table_info(arguments)")}
+    topics_sel = "topics" if "topics" in arg_cols else "NULL AS topics"
+    # provenance: 'probe' (parsed from real --help) vs 'inferred' (crawl+LLM). Old DBs
+    # without the column default to 'inferred' (unverified until proven) — backward-safe.
+    prov_sel = "provenance" if "provenance" in arg_cols else "'inferred' AS provenance"
     arguments = [
         {
             "cmd_path": r["cmd_path"],
@@ -49,10 +52,11 @@ def export(db_path: Path, out_path: Path) -> None:
             "script_url": r["script_url"],
             "source_url": r["source_url"],
             "topics": r["topics"],
+            "provenance": r["provenance"],
         }
         for r in conn.execute(
             "SELECT cmd_path, app_id, node_name, node_type, description, risk_level, "
-            f"example_template, docker_image, script_url, source_url, {topics_sel} FROM arguments"
+            f"example_template, docker_image, script_url, source_url, {topics_sel}, {prov_sel} FROM arguments"
         )
     ]
     conn.close()
