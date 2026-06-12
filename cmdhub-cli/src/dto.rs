@@ -25,6 +25,9 @@ pub struct FullDto {
     pub example_template: Option<String>,
     pub status: String,
     pub install_command: Option<String>,
+    /// True when the contract was parsed from the tool's real --help (provenance =
+    /// probe). Agents should prefer verified contracts; inferred examples may be wrong.
+    pub verified: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -247,6 +250,7 @@ pub fn format_results(
                         example_template: c.example_template,
                         status,
                         install_command,
+                        verified: c.verified,
                         docker_image: c.docker_image,
                         script_url: c.script_url,
                         source_url: c.source_url,
@@ -286,6 +290,7 @@ mod tests {
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: false,
         };
 
         let mut config = Config::default();
@@ -329,6 +334,7 @@ mod tests {
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: false,
         };
 
         let mut config = Config::default();

@@ -141,6 +141,11 @@ pub struct AciCommandContract {
     /// Popularity score (0.0 to 1.0) derived from distro package counts
     #[serde(default)]
     pub popularity: f64,
+    /// True when this contract was parsed from the tool's real `--help` output
+    /// (provenance = 'probe'); false for crawl+LLM-inferred contracts. Agents
+    /// should prefer verified contracts and treat inferred examples with caution.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// Metadata about the local offline database.
@@ -240,6 +245,9 @@ pub struct DbAciRecord {
     pub docker_image: Option<String>,
     pub script_url: Option<String>,
     pub source_url: Option<String>,
+    /// 'probe' (parsed from real --help) or 'inferred' (crawl+LLM). None when the
+    /// local DB predates the provenance column — treated as 'inferred' (unverified).
+    pub provenance: Option<String>,
 }
 
 impl AciCommandContract {
@@ -371,6 +379,7 @@ impl TryFrom<DbAciRecord> for AciCommandContract {
             script_url: record.script_url,
             source_url: record.source_url,
             popularity: record.popularity,
+            verified: record.provenance.as_deref() == Some("probe"),
         })
     }
 }
@@ -399,6 +408,7 @@ CREATE TABLE IF NOT EXISTS arguments (
     docker_image TEXT,
     script_url TEXT,
     source_url TEXT,
+    provenance TEXT NOT NULL DEFAULT 'inferred',
     FOREIGN KEY(app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 "#;
@@ -469,6 +479,7 @@ mod tests {
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: false,
         };
 
         let json = serde_json::to_string(&contract).unwrap();
@@ -513,6 +524,7 @@ mod tests {
             ),
             source_url: Some("https://github.com/mtoyoda/sl".to_string()),
             popularity: 0.8,
+            verified: false,
         };
 
         // Test node_name extraction
@@ -562,6 +574,7 @@ mod tests {
             docker_image: db_arg.docker_image,
             script_url: db_arg.script_url,
             source_url: db_arg.source_url,
+            provenance: Some("probe".to_string()),
         };
 
         let reconstructed = AciCommandContract::try_from(db_record).unwrap();

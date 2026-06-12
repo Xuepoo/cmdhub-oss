@@ -185,6 +185,7 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: true,
         };
 
         // Insert database contract
@@ -432,8 +433,8 @@ fn insert_contract(conn: &rusqlite::Connection, contract: &AciCommandContract) -
     let (app, arg) = contract.to_db_records()?;
 
     conn.execute(
-        "INSERT OR REPLACE INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT OR REPLACE INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template, provenance) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'probe')",
         (
             &arg.cmd_path,
             &arg.app_id,

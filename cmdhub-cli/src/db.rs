@@ -74,6 +74,9 @@ fn concept_synonyms(token: &str) -> &'static [&'static str] {
         // Intent verbs: user says "delete" but tools say "remove/unlink", etc.
         "delete" | "erase" => &["remove", "unlink", "trash"],
         "remove" => &["delete", "unlink"],
+        // Cleanup intent: "clear/clean unused images" must reach `prune`-style commands.
+        "clear" | "clean" | "cleanup" | "purge" => &["prune", "remove", "rm", "delete", "unused"],
+        "prune" => &["clean", "remove", "delete", "unused"],
         "view" | "read" => &["show", "display"],
         "deploy" | "deployment" => &["apply", "install"],
         "history" => &["log", "commits"],
@@ -137,6 +140,24 @@ fn detect_vec_dim(conn: &Connection) -> Option<usize> {
     rest[..end].parse().ok()
 }
 
+/// SQL expression for the provenance column, tolerant of pre-provenance databases.
+/// A new client must keep working against an old DB (schema v1): when the column is
+/// absent we select the literal 'inferred' (unverified until proven) instead.
+pub(crate) fn provenance_expr(conn: &Connection) -> &'static str {
+    let has = conn
+        .query_row(
+            "SELECT 1 FROM pragma_table_info('arguments') WHERE name = 'provenance'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if has {
+        "arg.provenance"
+    } else {
+        "'inferred'"
+    }
+}
+
 pub fn search_cascading(
     conn: &Connection,
     query: &str,
@@ -146,6 +167,7 @@ pub fn search_cascading(
 ) -> Result<Vec<AciCommandContract>> {
     let and_query = preprocess_query(query, true);
     let or_query = preprocess_query(query, false);
+    let prov = provenance_expr(conn);
 
     // Adapt query vector to the DB's stored embedding dimension. The ONNX model outputs
     // 384-dim vectors but an older database may still store float[512] (zero-padded).
@@ -223,7 +245,7 @@ pub fn search_cascading(
 
     // 1. Fast exact-match check (LOWER check for path/name)
     let trimmed_query = query.trim().to_lowercase();
-    let mut exact_stmt = conn.prepare(
+    let mut exact_stmt = conn.prepare(&format!(
         "SELECT \
             arg.app_id, \
             app.name, \
@@ -237,13 +259,14 @@ pub fn search_cascading(
             app.popularity, \
             arg.docker_image, \
             arg.script_url, \
-            arg.source_url \
+            arg.source_url, \
+            {prov} \
         FROM arguments arg \
         JOIN apps app ON arg.app_id = app.app_id \
         WHERE LOWER(arg.cmd_path) = :query \
            OR (LOWER(app.name) = :query AND arg.node_type = 'root') \
-        LIMIT :limit_num",
-    )?;
+        LIMIT :limit_num"
+    ))?;
 
     let exact_rows = exact_stmt.query_map(
         rusqlite::named_params! {
@@ -265,6 +288,7 @@ pub fn search_cascading(
                 docker_image: row.get(10)?,
                 script_url: row.get(11)?,
                 source_url: row.get(12)?,
+                provenance: row.get(13)?,
             })
         },
     )?;
@@ -503,7 +527,7 @@ pub fn search_cascading(
     let pool = std::cmp::max(limit, 30);
     let mut results = Vec::new();
     if let Some(ref vb) = vec_bytes {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "WITH fts_rank AS ( \
                 SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
                 FROM apps_fts WHERE apps_fts MATCH :query \
@@ -527,7 +551,8 @@ pub fn search_cascading(
                 app.popularity, \
                 arg.docker_image, \
                 arg.script_url, \
-                arg.source_url \
+                arg.source_url, \
+                {prov} \
             FROM arguments arg \
             JOIN apps app ON arg.app_id = app.app_id \
             LEFT JOIN fts_rank fts ON arg.cmd_path = fts.cmd_path \
@@ -536,7 +561,7 @@ pub fn search_cascading(
               AND arg.app_id IN (:app1, :app2, :app3, :app4, :app5, :app6, :app7, :app8) \
             ORDER BY COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) DESC \
             LIMIT :limit_num"
-        )?;
+        ))?;
 
         let rows = stmt.query_map(
             rusqlite::named_params! {
@@ -567,6 +592,7 @@ pub fn search_cascading(
                     docker_image: row.get(10)?,
                     script_url: row.get(11)?,
                     source_url: row.get(12)?,
+                    provenance: row.get(13)?,
                 })
             },
         )?;
@@ -578,7 +604,7 @@ pub fn search_cascading(
             }
         }
     } else {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT \
                 arg.app_id, \
                 app.name, \
@@ -592,15 +618,16 @@ pub fn search_cascading(
                 app.popularity, \
                 arg.docker_image, \
                 arg.script_url, \
-                arg.source_url \
+                arg.source_url, \
+                {prov} \
             FROM arguments arg \
             JOIN apps app ON arg.app_id = app.app_id \
             JOIN apps_fts fts ON arg.cmd_path = fts.cmd_path \
             WHERE apps_fts MATCH :query \
               AND arg.app_id IN (:app1, :app2, :app3, :app4, :app5, :app6, :app7, :app8) \
             ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC \
-            LIMIT :limit_num",
-        )?;
+            LIMIT :limit_num"
+        ))?;
 
         let rows = stmt.query_map(
             rusqlite::named_params! {
@@ -630,6 +657,7 @@ pub fn search_cascading(
                     docker_image: row.get(10)?,
                     script_url: row.get(11)?,
                     source_url: row.get(12)?,
+                    provenance: row.get(13)?,
                 })
             },
         )?;
@@ -648,6 +676,11 @@ pub fn search_cascading(
     // aws", and keeps the named service (ec2) in play — without discarding semantic
     // (vector) ranking, since the RRF position still contributes.
     let q_tokens = content_tokens(query);
+    // Expanded token set for PATH matching only: intent synonyms + singular forms, so
+    // "clear podman unused images" can match a `podman.image.prune` path (clear→prune,
+    // images→image). Gating decisions below still use the raw token count — they measure
+    // how specific the user's own query is, not the synonym expansion.
+    let q_path_tokens = expand_for_path_match(&q_tokens);
     if !q_tokens.is_empty() && results.len() > 1 {
         let n = results.len() as i32;
         // Path-match disambiguation is decisive for action/resource queries (multiple
@@ -675,10 +708,15 @@ pub fn search_cascading(
                 } else {
                     0
                 };
+                // Provenance prior: a probe-verified contract gets a modest boost so it
+                // wins ties and corrects inversions against LLM-inferred fabrications,
+                // without burying a strongly-matching inferred result.
+                let verified_bonus = if c.verified { VERIFIED_BONUS } else { 0 };
                 let composite = rrf
-                    + path_w * path_match_score(&c.cmd_path, &q_tokens)
+                    + path_w * path_match_score(&c.cmd_path, &q_path_tokens)
                     + pop_bonus
-                    + root_bonus;
+                    + root_bonus
+                    + verified_bonus;
                 (composite, i, c)
             })
             .collect();
@@ -709,6 +747,34 @@ pub fn search_cascading(
 
     final_results.truncate(limit);
     Ok(final_results)
+}
+
+/// Provenance prior weight in the composite re-rank: equivalent to jumping a few RRF
+/// ranks. Modest by design — corrects probe-vs-inferred inversions without letting a
+/// weakly-matching verified row bury a strongly-matching inferred one.
+const VERIFIED_BONUS: i32 = 3;
+
+/// Expand query tokens for PATH matching: each token contributes itself, its singular
+/// form (images→image), and its intent synonyms (clear→prune). This lets the path
+/// re-ranker reward `podman.image.prune` for "clear podman unused images" even though
+/// no literal query word appears in the path. FTS recall gets the same widening via
+/// preprocess_query; this applies it to the path-match dimension too.
+fn expand_for_path_match(
+    tokens: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in tokens {
+        out.insert(t.clone());
+        if let Some(stem) = t.strip_suffix('s') {
+            if stem.len() >= 3 {
+                out.insert(stem.to_string());
+            }
+        }
+        for syn in concept_synonyms(t) {
+            out.insert((*syn).to_string());
+        }
+    }
+    out
 }
 
 /// Lowercased content tokens of a query (alphanumerics, stop-words removed).
@@ -753,7 +819,16 @@ fn path_match_score(cmd_path: &str, q_tokens: &std::collections::HashSet<String>
     if tokens.is_empty() {
         return 0;
     }
-    let overlap = tokens.iter().filter(|t| q_tokens.contains(*t)).count() as i32;
+    // A path token matches on its literal form or its singular (images ~ image), so
+    // plural/singular mismatches between query and path don't lose the overlap.
+    let overlap = tokens
+        .iter()
+        .filter(|t| {
+            q_tokens.contains(*t)
+                || t.strip_suffix('s')
+                    .is_some_and(|s| s.len() >= 3 && q_tokens.contains(s))
+        })
+        .count() as i32;
     let extra = tokens.len() as i32 - overlap;
     // Use max(0, ...) to avoid negative scores: unmatched path tokens should not
     // actively penalise otherwise-good commands (e.g. "git.log" for "git commit history").
@@ -955,5 +1030,85 @@ mod tests {
         let res = search_commands(&conn, "missing_term", Some(&query_vec), 10).unwrap();
         assert!(!res.is_empty());
         assert_eq!(res[0].cmd_path, "knn");
+    }
+
+    #[test]
+    fn test_clear_maps_to_prune_synonyms() {
+        assert!(concept_synonyms("clear").contains(&"prune"));
+        assert!(concept_synonyms("clean").contains(&"prune"));
+        assert!(concept_synonyms("purge").contains(&"prune"));
+        assert!(concept_synonyms("prune").contains(&"unused"));
+    }
+
+    #[test]
+    fn test_expand_for_path_match_adds_synonyms_and_singulars() {
+        let tokens: std::collections::HashSet<String> =
+            ["clear", "images"].iter().map(|s| s.to_string()).collect();
+        let expanded = expand_for_path_match(&tokens);
+        assert!(expanded.contains("prune")); // clear → prune
+        assert!(expanded.contains("image")); // images → image
+        assert!(expanded.contains("clear")); // originals kept
+    }
+
+    #[test]
+    fn test_old_schema_db_without_provenance_still_works() {
+        // A pre-provenance (schema v1) database must not crash a new client and must
+        // report verified=false for everything.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE apps (app_id TEXT PRIMARY KEY, name TEXT NOT NULL, os_aliases TEXT, \
+             install_instructions TEXT, popularity REAL DEFAULT 0.0); \
+             CREATE TABLE arguments (cmd_path TEXT PRIMARY KEY, app_id TEXT NOT NULL, \
+             node_name TEXT NOT NULL, node_type TEXT NOT NULL, description TEXT NOT NULL, \
+             risk_level TEXT NOT NULL, example_template TEXT, docker_image TEXT, \
+             script_url TEXT, source_url TEXT); \
+             CREATE VIRTUAL TABLE apps_fts USING fts5(cmd_path UNINDEXED, name, capabilities); \
+             INSERT INTO apps (app_id, name) VALUES ('org.test.tar', 'tar'); \
+             INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level) \
+             VALUES ('tar', 'org.test.tar', 'tar', 'root', 'archive files', 'safe'); \
+             INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES ('tar', 'tar', 'archive files');",
+        )
+        .unwrap();
+
+        let res = search_commands(&conn, "tar", None, 5).unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(res[0].cmd_path, "tar");
+        assert!(!res[0].verified); // old DB → unverified by definition
+    }
+
+    #[test]
+    fn test_probe_verified_outranks_inferred_twin() {
+        // Two equal-text commands from different sources; the probe-verified one must
+        // rank first via the provenance prior, and `verified` must surface in output.
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        for (app, prov) in [("org.inferred.tool", "inferred"), ("org.probed.tool", "probe")] {
+            let name = if prov == "probe" { "toolp" } else { "tooli" };
+            conn.execute(
+                "INSERT INTO apps (app_id, name, install_instructions) VALUES (?, ?, '{}')",
+                (app, name),
+            )
+            .unwrap();
+            let path = format!("{}.image.prune", name);
+            conn.execute(
+                "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, \
+                 risk_level, provenance) VALUES (?, ?, 'prune', 'sub', \
+                 'Remove unused container images to free disk space', 'dangerous', ?)",
+                (&path, app, prov),
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?, ?, \
+                 'Remove unused container images to free disk space')",
+                (&path, name),
+            )
+            .unwrap();
+        }
+
+        let res = search_cascading(&conn, "clear unused images", None, 5, false).unwrap();
+        assert!(res.len() >= 2, "expected both twins, got {}", res.len());
+        assert!(res[0].verified, "probe-verified twin must rank first");
+        assert!(res[0].cmd_path.starts_with("toolp"));
+        assert!(!res[1].verified);
     }
 }

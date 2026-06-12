@@ -229,6 +229,7 @@ mod tests {
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: false,
         };
 
         let contract2 = AciCommandContract {
@@ -245,6 +246,7 @@ mod tests {
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: false,
         };
 
         let dummy_skill = DummySkill {
@@ -285,6 +287,7 @@ mod tests {
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: false,
         };
 
         let sl_json_path = temp_dir.join("sl.json");
@@ -305,6 +308,7 @@ mod tests {
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: false,
         };
         let git_json_path = temp_dir.join("git.json");
         let git_json_content = serde_json::to_string(&vec![contract_git]).unwrap();
@@ -326,6 +330,7 @@ mod tests {
             script_url: None,
             source_url: None,
             popularity: 0.0,
+            verified: false,
         };
         let tar_json_path = sub_dir.join("tar.json");
         let tar_json_content = serde_json::to_string(&contract_tar).unwrap();

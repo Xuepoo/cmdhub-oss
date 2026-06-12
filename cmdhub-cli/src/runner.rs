@@ -6,7 +6,8 @@ use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
 pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciCommandContract> {
-    let mut stmt = conn.prepare(
+    let prov = crate::db::provenance_expr(conn);
+    let mut stmt = conn.prepare(&format!(
         "SELECT \
             arg.app_id, \
             app.name, \
@@ -20,11 +21,12 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
             app.popularity, \
             arg.docker_image, \
             arg.script_url, \
-            arg.source_url \
+            arg.source_url, \
+            {prov} \
         FROM arguments arg \
         JOIN apps app ON arg.app_id = app.app_id \
-        WHERE arg.cmd_path = ?1",
-    )?;
+        WHERE arg.cmd_path = ?1"
+    ))?;
 
     let record = stmt
         .query_row([cmd_path], |row| {
@@ -42,6 +44,7 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
                 docker_image: row.get(10)?,
                 script_url: row.get(11)?,
                 source_url: row.get(12)?,
+                provenance: row.get(13)?,
             })
         })
         .context("Command path not found in database")?;
