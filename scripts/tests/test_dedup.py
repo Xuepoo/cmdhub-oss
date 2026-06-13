@@ -90,6 +90,42 @@ def test_dedup_prefers_canonical_path_row_over_fragment():
     assert "fragtopic" in out[0]["topics"]
 
 
+def test_root_rows_never_merge_across_apps():
+    # npm's `rm` and coreutils' `rm` share a name but are DIFFERENT tools; and an app's
+    # root row is its identity anchor for Stage-1 selection. Roots must pass through.
+    args = [
+        {"cmd_path": "rm", "app_id": "org.gnu.coreutils.rm", "node_name": "rm",
+         "description": "remove files", "risk_level": "dangerous",
+         "topics": "", "provenance": "inferred"},
+        {"cmd_path": "rm", "app_id": "org.npmjs.rm", "node_name": "rm",
+         "description": "npm rm shortcut", "risk_level": "safe",
+         "topics": "", "provenance": "inferred"},
+    ]
+    out = build_db._canonicalize_and_dedup(args, apps=[])
+    assert len(out) == 2
+
+
+def test_sub_merge_prefers_richest_apps_tree_on_tie():
+    # Equal provenance/canonical-path/popularity: the app owning the larger command
+    # tree (the consolidated real tool) keeps the row.
+    args = [
+        {"cmd_path": "podman.image.prune", "app_id": "tiny", "node_name": "prune",
+         "description": "d", "risk_level": "dangerous", "topics": "a", "provenance": "inferred"},
+        {"cmd_path": "podman.image.prune", "app_id": "rich", "node_name": "prune",
+         "description": "d", "risk_level": "dangerous", "topics": "b", "provenance": "inferred"},
+        # bulk rows that make `rich` the bigger tree
+        {"cmd_path": "podman.pull", "app_id": "rich", "node_name": "pull",
+         "description": "d", "risk_level": "safe", "topics": "", "provenance": "inferred"},
+        {"cmd_path": "podman.push", "app_id": "rich", "node_name": "push",
+         "description": "d", "risk_level": "safe", "topics": "", "provenance": "inferred"},
+    ]
+    out = build_db._canonicalize_and_dedup(args, apps=[])
+    prunes = [a for a in out if a["node_name"] == "prune"]
+    assert len(prunes) == 1
+    assert prunes[0]["app_id"] == "rich"
+    assert "a" in prunes[0]["topics"] and "b" in prunes[0]["topics"]
+
+
 def test_dedup_falls_back_to_popularity_when_no_probe():
     args = [
         {"cmd_path": "tool-image.prune", "app_id": "lo", "node_name": "prune",
