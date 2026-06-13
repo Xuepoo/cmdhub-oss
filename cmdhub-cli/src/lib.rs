@@ -8,6 +8,7 @@ pub mod dto;
 pub mod inference;
 pub mod installer;
 pub mod os_detector;
+pub mod robustness;
 pub mod runner;
 pub mod tokenizer;
 pub mod updater;
@@ -201,12 +202,13 @@ package_managers = ["uv", "npm", "cargo", "go"]
             usage_only,
             minimal,
         } => {
+            let robustness_query = robustness::preprocess_robustness(&query);
             let mut query_vector = None;
             match installer::ensure_model_installed(&config).await {
                 Ok(model_path) => {
                     if let Ok(model) = inference::EmbeddingModel::load(&model_path) {
                         let tokenizer = tokenizer::Tokenizer::new();
-                        let (ids, mask) = tokenizer.tokenize_query(&query);
+                        let (ids, mask) = tokenizer.tokenize_query(&robustness_query);
                         if let Ok(vec) = model.generate_embedding(&ids, &mask) {
                             query_vector = Some(vec);
                         }
@@ -220,7 +222,7 @@ package_managers = ["uv", "npm", "cargo", "go"]
                 }
             }
 
-            let results = db::search_all(&conn, &query, query_vector.as_deref(), limit)?;
+            let results = db::search_all(&conn, &robustness_query, query_vector.as_deref(), limit)?;
 
             let is_none = results.iter().any(|r| r.confidence == "none");
             if is_none {

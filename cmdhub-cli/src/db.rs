@@ -178,8 +178,9 @@ pub fn search_cascading(
     limit: usize,
     enable_vector: bool,
 ) -> Result<Vec<AciCommandContract>> {
-    let and_query = preprocess_query(query, true);
-    let or_query = preprocess_query(query, false);
+    let cleaned_query = crate::robustness::preprocess_robustness(query);
+    let and_query = preprocess_query(&cleaned_query, true);
+    let or_query = preprocess_query(&cleaned_query, false);
     let mut confidence = "high".to_string();
     let prov = provenance_expr(conn);
 
