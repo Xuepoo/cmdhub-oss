@@ -104,6 +104,30 @@ def test_dedup_falls_back_to_popularity_when_no_probe():
     assert "x" in out[0]["topics"] and "y" in out[0]["topics"]
 
 
+def test_clean_path_reconciles_node_type_with_dot_invariant():
+    # Regression: _clean_cmd_path rewrites the path string but cannot touch node_type;
+    # the build loop must re-derive node_type from dot-presence so a dirty root that
+    # gains a dot (arc amend -> arc.amend, docker_compose -> docker.compose) is no longer
+    # tagged 'root' — otherwise validate_db's node_type_invariant FAILs on the next build.
+    cases = {
+        "arc amend": ("arc.amend", "sub"),          # space subcommand wrongly a root
+        "docker_compose": ("docker.compose", "sub"),  # fused root
+        "buildctl build": ("buildctl.build", "sub"),
+        "beep -r": ("beep", "root"),                  # flag-noise collapses to bare binary
+        "beep -f -l -n": ("beep", "root"),
+        "git": ("git", "root"),                       # already clean root, untouched
+        "git.log": ("git.log", "sub"),                # already clean sub, untouched
+    }
+    for dirty, (want_path, want_nt) in cases.items():
+        cleaned = build_db._clean_cmd_path(dirty)
+        assert cleaned == want_path, f"{dirty!r} -> {cleaned!r}, want {want_path!r}"
+        assert build_db._node_type_for_path(cleaned) == want_nt, f"{cleaned!r}"
+    # The invariant validate_db enforces: a dotted cleaned path is never a root.
+    for dirty in cases:
+        c = build_db._clean_cmd_path(dirty)
+        assert not ("." in c and build_db._node_type_for_path(c) == "root")
+
+
 def test_strict_reanchor_moves_root_to_dominant_consolidated_app():
     # podman root on a 2-cmd namesake; the 110-cmd consolidated app has the subtree but
     # no root → re-anchor moves the root there (>=20 and >=5x). curl (no dominant app)

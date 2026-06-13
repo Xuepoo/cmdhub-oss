@@ -315,6 +315,16 @@ def _clean_cmd_path(cmd_path: str) -> str:
     return path
 
 
+def _node_type_for_path(cmd_path: str) -> str:
+    """Reconcile node_type with the dot-presence invariant that validate_db enforces.
+
+    A cleaned path carrying a dot is a subcommand (e.g. the dirty root `arc amend`
+    becomes `arc.amend`); one collapsed to the bare binary is a root (`beep -r` →
+    `beep`). `_clean_cmd_path` only rewrites the path string, so without this the
+    rewritten rows keep their stale node_type and trip `node_type_invariant`."""
+    return "sub" if "." in cmd_path else "root"
+
+
 def _canonical_path(cmd_path: str) -> str:
     """Canonical identity of a command across crawl sources. A fused-subcommand root is
     unfolded into a real path segment (podman-image.prune → podman.image.prune) and
@@ -543,6 +553,7 @@ def build(
     for a in raw_args:
         a["cmd_path"] = _clean_cmd_path(a["cmd_path"])
         cp = a["cmd_path"]
+        a["node_type"] = _node_type_for_path(cp)
         if cp in seen:
             continue
         seen.add(cp)
