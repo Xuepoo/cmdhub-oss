@@ -90,6 +90,22 @@ fn concept_synonyms(token: &str) -> &'static [&'static str] {
     }
 }
 
+/// Concept word → CANONICAL TOOL NAMES only. A strict subset of `concept_synonyms` safe to
+/// OR onto the AND-candidate (Stage-1 widening): every value is a specific binary name, so
+/// appending it surfaces the canonical tool a literal query misses (fzf for "fuzzy", rg for
+/// "grep") without flooding the candidate pool the way generic concept words do. Keep this
+/// list tool-names-only; never add generic verbs/nouns here (use `concept_synonyms` for those).
+fn tool_alias_synonyms(token: &str) -> &'static [&'static str] {
+    match token {
+        "fuzzy" => &["fzf", "skim"],
+        "finder" => &["fzf", "fd"],
+        "download" => &["curl", "wget", "aria2"],
+        "diff" => &["delta", "difft"],
+        "grep" => &["ripgrep", "rg"],
+        _ => &[],
+    }
+}
+
 fn preprocess_query(query: &str, use_and: bool) -> String {
     let stop_words: std::collections::HashSet<&str> = [
         "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by", "and",
@@ -251,8 +267,15 @@ pub fn search_cascading(
             seen.insert(w.clone());
         }
 
+        // Widen the AND candidate with TOOL-NAME synonyms only (fuzzy→fzf, grep→rg). These
+        // are specific binary names — OR-ing them in surfaces a canonical tool the literal
+        // AND query misses (fzf has no "file" token) WITHOUT flooding. Generic concept
+        // synonyms (kubernetes→namespace/cluster, view→show) are deliberately EXCLUDED here:
+        // OR-ing those on the AND path floods competitors and demotes the right tool
+        // (verified: it sank kubectl.logs below stern/kail for "kubernetes pod logs"). Those
+        // stay in the or-fallback path (concept_synonyms) for when there is no AND match.
         for w in &base_tokens {
-            for syn in concept_synonyms(w) {
+            for syn in tool_alias_synonyms(w) {
                 let syn_str = (*syn).to_string();
                 if seen.insert(syn_str.clone()) {
                     syn_terms.push(format!("{}*", syn_str));
@@ -377,10 +400,16 @@ pub fn search_cascading(
     } else {
         (0.0, 0.015)
     };
+    // cold_floor scales a low-popularity tool's FTS-RRF contribution down. DISABLED by
+    // default (1.0 = no-op): a penalty <1.0 is data-fragile — Repology popularity is
+    // unreliable for core tools (chmod/tar drop to ~0.15 when their TLDR install JSON is
+    // NULL), so penalizing low-pop name matches demotes the REAL canonical tool (verified:
+    // 0.85 regressed "extract tar.gz" — tar sank below archive-cli). Kept as an env knob
+    // for offline calibration only; never ship < 1.0 without re-clearing the golden gate.
     let cold_floor = std::env::var("CMDH_COLD_FLOOR")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(0.85);
+        .unwrap_or(1.0);
     let mut top_apps = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
@@ -1083,6 +1112,21 @@ mod tests {
         assert!(concept_synonyms("download").contains(&"curl"));
         assert!(concept_synonyms("diff").contains(&"delta"));
         assert!(concept_synonyms("grep").contains(&"ripgrep"));
+    }
+
+    #[test]
+    fn test_tool_alias_synonyms_are_tool_names_only_not_generic_concepts() {
+        // The AND-path widening uses ONLY tool-name aliases (specific binaries) so it
+        // never floods candidates. Generic concept words must NOT appear here (they
+        // regressed "kubernetes pod logs" by surfacing stern/kail) — they stay in
+        // concept_synonyms for the or-fallback path only.
+        assert!(tool_alias_synonyms("fuzzy").contains(&"fzf"));
+        assert!(tool_alias_synonyms("grep").contains(&"rg"));
+        assert!(tool_alias_synonyms("download").contains(&"curl"));
+        // Generic concept tokens expand in concept_synonyms but NOT in the and-path map:
+        assert!(tool_alias_synonyms("kubernetes").is_empty());
+        assert!(tool_alias_synonyms("view").is_empty());
+        assert!(tool_alias_synonyms("clear").is_empty());
     }
 
     #[test]
