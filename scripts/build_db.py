@@ -288,6 +288,23 @@ def _canonical_tool(root: str) -> str:
     return r
 
 
+def _clean_cmd_path(cmd_path: str) -> str:
+    """Clean dirty command paths (spaces -> dots, docker_compose -> docker.compose)."""
+    # 1. Replace docker_compose variants
+    path = cmd_path.replace("docker_compose_up", "docker.compose.up")
+    path = path.replace("docker_compose", "docker.compose")
+    
+    # 2. Replace spaces with dots
+    path = path.replace(" ", ".")
+    
+    # 3. Collapse multiple consecutive dots and strip leading/trailing dots
+    while ".." in path:
+        path = path.replace("..", ".")
+    path = path.strip(".")
+    
+    return path
+
+
 def _canonical_path(cmd_path: str) -> str:
     """Canonical identity of a command across crawl sources. A fused-subcommand root is
     unfolded into a real path segment (podman-image.prune → podman.image.prune) and
@@ -514,6 +531,7 @@ def build(
     arguments: list[dict] = []
     noise = 0
     for a in raw_args:
+        a["cmd_path"] = _clean_cmd_path(a["cmd_path"])
         cp = a["cmd_path"]
         if cp in seen:
             continue

@@ -411,6 +411,8 @@ def check_fabricated_examples(rows: list[dict]) -> list[str]:
         for i, t in enumerate(tokens[1:]):
             if t.startswith("-") or "{{" in t or "=" in t:
                 break
+            if t in ("|", "&&", "||", ";", ">", "<", ">>", "2>"):
+                break
             if i >= len(path_words) or path_words[i] != t.lower():
                 warns.append(
                     f"{cmd_path}: inferred example subcommand '{t}' not in the "
