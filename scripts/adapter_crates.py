@@ -51,6 +51,7 @@ def fetch(out_path: Path, proxy: str, max_pages: int) -> None:
             if not name:
                 continue
             desc = (c.get("description") or "").strip()
+            repo_url = c.get("repository") or c.get("homepage") or ""
             records.append({
                 "app_id": f"io.crates.{name}",
                 "name": name,
@@ -58,6 +59,7 @@ def fetch(out_path: Path, proxy: str, max_pages: int) -> None:
                 "description": desc or f"{name} (Rust command-line tool)",
                 "install_instructions": {"cargo": f"cargo install {name}"},
                 "source": "crates.io",
+                "source_url": repo_url,
             })
         print(f"[crates] page {page}: +{len(crates)} (total {len(records)})", flush=True)
         page += 1

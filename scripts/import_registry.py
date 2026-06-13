@@ -60,11 +60,14 @@ def import_records(db_path: Path, record_files: list[Path]) -> None:
                 "INSERT OR IGNORE INTO apps (app_id, name, install_instructions) VALUES (?,?,?)",
                 (app_id, name, install),
             )
+            source_url = r.get("source_url")
+            script_url = r.get("script_url")
+            docker_image = r.get("docker_image")
             conn.execute(
                 "INSERT OR IGNORE INTO arguments "
-                "(app_id, cmd_path, node_name, node_type, description, risk_level) "
-                "VALUES (?,?,?,?,?, 'safe')",
-                (app_id, cmd, name, "root", r["description"]),
+                "(app_id, cmd_path, node_name, node_type, description, risk_level, source_url, script_url, docker_image) "
+                "VALUES (?,?,?,?,?, 'safe', ?, ?, ?)",
+                (app_id, cmd, name, "root", r["description"], source_url, script_url, docker_image),
             )
             seen_new.add(cmd)
             added += 1

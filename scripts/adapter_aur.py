@@ -56,6 +56,7 @@ def fetch(out_path: Path, proxy: str) -> None:
             skipped += 1
             continue
         desc = (p.get("Description") or "").strip()
+        repo_url = p.get("URL") or ""
         records.append({
             "app_id": f"org.archlinux.aur.{name}",
             "name": name,
@@ -63,6 +64,7 @@ def fetch(out_path: Path, proxy: str) -> None:
             "description": desc or f"{name} (AUR package)",
             "install_instructions": {"yay": f"yay -S {name}", "paru": f"paru -S {name}"},
             "source": "aur",
+            "source_url": repo_url,
         })
     out_path.write_text(json.dumps(records, ensure_ascii=False))
     print(f"[aur] wrote {len(records)} records ({skipped} skipped) → {out_path}")

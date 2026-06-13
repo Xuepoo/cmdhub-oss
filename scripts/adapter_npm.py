@@ -19,17 +19,33 @@ from pathlib import Path
 import requests
 
 
-def _has_bin(s: requests.Session, name: str, proxies: dict) -> bool:
-    """True if the npm package exposes a CLI bin (filters out libraries like ansi-styles)."""
+def _get_npm_metadata(s: requests.Session, name: str, proxies: dict) -> tuple[bool, str]:
+    """Returns (has_bin, repo_url) for the npm package."""
     try:
         r = s.get(f"https://registry.npmjs.org/{name}", proxies=proxies, timeout=10)
         if r.status_code != 200:
-            return False
+            return False, ""
         d = r.json()
         latest = d.get("dist-tags", {}).get("latest")
-        return bool(d.get("versions", {}).get(latest, {}).get("bin")) if latest else False
+        if not latest:
+            return False, ""
+        ver_data = d.get("versions", {}).get(latest, {})
+        has_bin = bool(ver_data.get("bin"))
+        
+        repo = ver_data.get("repository") or d.get("repository") or ver_data.get("homepage") or d.get("homepage") or ""
+        repo_url = ""
+        if isinstance(repo, dict):
+            repo_url = repo.get("url") or ""
+        elif isinstance(repo, str):
+            repo_url = repo
+            
+        if repo_url.startswith("git+"):
+            repo_url = repo_url[4:]
+        if repo_url.endswith(".git"):
+            repo_url = repo_url[:-4]
+        return has_bin, repo_url
     except Exception:
-        return False
+        return False, ""
 
 
 def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
@@ -67,7 +83,8 @@ def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
             if not name or name in seen:
                 continue
             seen.add(name)
-            if not _has_bin(s, name, proxies):  # keep only real CLIs, not libraries
+            has_bin, repo_url = _get_npm_metadata(s, name, proxies)
+            if not has_bin:  # keep only real CLIs, not libraries
                 continue
             desc = (pkg.get("description") or "").strip()
             records.append({
@@ -77,6 +94,7 @@ def fetch(out_path: Path, proxy: str, max_pkgs: int) -> None:
                 "description": desc or f"{name} (npm CLI package)",
                 "install_instructions": {"npm": f"npm install -g {name}"},
                 "source": "npm",
+                "source_url": repo_url,
             })
         stale = stale + 1 if len(seen) == before else 0
         print(f"[npm] from={frm}: seen {len(seen)}, cli {len(records)}", flush=True)

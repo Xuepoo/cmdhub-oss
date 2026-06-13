@@ -46,11 +46,21 @@ def fetch(out_path: Path, proxy: str, top: int, workers: int) -> None:
                 info = r.json().get("info", {})
                 if any(c.startswith("Environment :: Console") for c in (info.get("classifiers") or [])):
                     desc = (info.get("summary") or "").strip()
+                    project_urls = info.get("project_urls") or {}
+                    repo_url = (
+                        project_urls.get("Source")
+                        or project_urls.get("Code")
+                        or project_urls.get("Repository")
+                        or project_urls.get("Homepage")
+                        or info.get("project_url")
+                        or ""
+                    )
                     rec = {
                         "app_id": f"org.pypi.{name}", "name": name, "cmd_path": name,
                         "description": desc or f"{name} (PyPI console application)",
                         "install_instructions": {"pip": f"pip install {name}", "uv": f"uv tool install {name}"},
                         "source": "pypi",
+                        "source_url": repo_url,
                     }
                     with lock:
                         records.append(rec)
