@@ -81,6 +81,7 @@ fn concept_synonyms(token: &str) -> &'static [&'static str] {
         "deploy" | "deployment" => &["apply", "install"],
         "history" => &["log", "commits"],
         "cat" => &["bat", "less", "pager"],
+        "fuzzy" => &["fzf", "skim", "finder"],
         _ => &[],
     }
 }
@@ -1040,6 +1041,7 @@ mod tests {
         assert!(concept_synonyms("clean").contains(&"prune"));
         assert!(concept_synonyms("purge").contains(&"prune"));
         assert!(concept_synonyms("prune").contains(&"unused"));
+        assert!(concept_synonyms("fuzzy").contains(&"fzf"));
     }
 
     #[test]
