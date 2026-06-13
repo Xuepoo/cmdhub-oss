@@ -289,13 +289,23 @@ def _canonical_tool(root: str) -> str:
 
 
 def _clean_cmd_path(cmd_path: str) -> str:
-    """Clean dirty command paths (spaces -> dots, docker_compose -> docker.compose)."""
+    """Clean dirty command paths (spaces -> dots, docker_compose -> docker.compose, strip flags)."""
     # 1. Replace docker_compose variants
     path = cmd_path.replace("docker_compose_up", "docker.compose.up")
+    path = path.replace("docker_compose.up_build", "docker.compose.up")
+    path = path.replace("docker_compose.up_detached", "docker.compose.up")
+    path = path.replace("docker_compose.up_project", "docker.compose.up")
+    path = path.replace("docker_compose.logs_container", "docker.compose.logs")
     path = path.replace("docker_compose", "docker.compose")
     
-    # 2. Replace spaces with dots
-    path = path.replace(" ", ".")
+    # 2. Split by whitespace and discard any segment starting with '-' (and all subsequent segments)
+    parts = path.split()
+    cleaned_parts = []
+    for p in parts:
+        if p.startswith("-"):
+            break
+        cleaned_parts.append(p)
+    path = ".".join(cleaned_parts)
     
     # 3. Collapse multiple consecutive dots and strip leading/trailing dots
     while ".." in path:
