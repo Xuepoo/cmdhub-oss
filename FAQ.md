@@ -41,7 +41,7 @@ No API calls, no tokens. The data was built once from real `--help` output.
 
 ### Why is a tool listed under `pacman` when it's actually an npm/pip package?
 Cross-platform install data is enriched by name-matching against package repositories,
-which occasionally mis-matches a same-named but unrelated package. Directly-probed tools
+which occasionally mismatches a same-named but unrelated package. Directly-probed tools
 (aws, gcloud, kubectl, gh, …) carry curated, correct install methods. Report bad ones.
 
 ## Coverage & data

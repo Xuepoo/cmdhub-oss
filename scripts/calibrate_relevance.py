@@ -29,7 +29,7 @@ import struct
 
 import build_db
 from calibrate_ood import SYNONYMS, embed, load_session, preprocess_query, fts_match
-from eval_golden import GOLDEN
+from eval_golden import GOLDEN, matches
 
 VOCAB = build_db.VOCAB_GZ_PATH
 
@@ -48,7 +48,7 @@ BASKET = [
     ("markdown viewer terminal", {"glow", "mdcat", "mdv"}),
     ("rust package manager", {"cargo"}),
     ("kubernetes command line", {"kubectl", "k9s"}),
-    ("git diff viewer", {"delta", "diff-so-fancy", "difft", "git"}),
+    ("git diff viewer", {"delta", "diff-so-fancy", "difft", "git", "difftastic", "git-delta"}),
     ("count lines of code", {"tokei", "cloc", "scc"}),
     ("replace grep with faster tool", {"rg", "ripgrep"}),
     ("paginate output less", {"less", "bat", "most"}),
@@ -90,7 +90,7 @@ def build_cand(query, conn, strategy):
 
 STAGE1_SQL = """
 WITH fts_matched AS (
-  SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC) as fts_pos
+  SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, :w_name, :w_desc) ASC) as fts_pos
   FROM apps_fts WHERE apps_fts MATCH :cand LIMIT 300
 ),
 fts_ordered AS (
@@ -123,41 +123,53 @@ name_deduped AS (
   SELECT app_id, nm, rrf_score, row_number() OVER (PARTITION BY nm ORDER BY rrf_score DESC) as rn
   FROM scored
 )
-SELECT nm, rrf_score FROM name_deduped WHERE rn=1 ORDER BY rrf_score DESC LIMIT 30
+SELECT app_id, nm, rrf_score FROM name_deduped WHERE rn=1 ORDER BY rrf_score DESC LIMIT 30
 """
 
 
-def stage1_apps(conn, qvec, cand, pw_lin, pw_cube, cold_floor):
-    qb = struct.pack(f"{len(qvec)}f", *qvec)
+def stage1_apps(conn, qv, cand, pw_lin, pw_cube, cold_floor, w_name, w_desc):
+    qb = struct.pack(f"{len(qv)}f", *qv)
     rows = conn.execute(
         STAGE1_SQL,
-        {"cand": cand, "qv": qb, "pw_lin": pw_lin, "pw_cube": pw_cube, "cold_floor": cold_floor},
+        {
+            "cand": cand,
+            "qv": qb,
+            "pw_lin": pw_lin,
+            "pw_cube": pw_cube,
+            "cold_floor": cold_floor,
+            "w_name": w_name,
+            "w_desc": w_desc,
+        },
     ).fetchall()
-    return [r[0] for r in rows]  # ordered app names
+    return [(r[0], r[1]) for r in rows]  # ordered (app_id, name) tuples
 
 
 def name_tokens(nm):
     return {nm.lower(), nm.lower().split(".")[0]}
 
 
-def eval_config(conn, sess, nm_map, vocab, cand_strategy, pw_lin, pw_cube, cold_floor):
+def eval_config(conn, sess, nm_map, vocab, cand_strategy, pw_lin, pw_cube, cold_floor, w_name, w_desc):
     # Basket burial
     buried = 0
     for q, want in BASKET:
         cand, _ = build_cand(q, conn, cand_strategy)
         qv = embed(sess, nm_map, vocab, q)
-        apps = stage1_apps(conn, qv, cand, pw_lin, pw_cube, cold_floor)
-        rank = next((i + 1 for i, nm in enumerate(apps[:TOPK]) if nm in want), None)
+        apps = stage1_apps(conn, qv, cand, pw_lin, pw_cube, cold_floor, w_name, w_desc)
+        rank = next((i + 1 for i, (_, nm) in enumerate(apps[:TOPK]) if nm in want), None)
         if rank is None:
             buried += 1
-    # Golden guard (app-level: any top-5 app name in the accept list)
+    # Golden guard (app-level: any top-5 app's commands in the accept list)
     g_found = 0
     for intent, accepts in GOLDEN:
-        acc = {a.lower() for a in accepts}
         cand, _ = build_cand(intent, conn, cand_strategy)
         qv = embed(sess, nm_map, vocab, intent)
-        apps = stage1_apps(conn, qv, cand, pw_lin, pw_cube, cold_floor)
-        if any(name_tokens(nm) & acc for nm in apps[:TOPK]):
+        apps = stage1_apps(conn, qv, cand, pw_lin, pw_cube, cold_floor, w_name, w_desc)
+        cmd_paths = []
+        for app_id, _ in apps[:TOPK]:
+            rows = conn.execute("SELECT cmd_path FROM arguments WHERE app_id = ?", (app_id,)).fetchall()
+            for r in rows:
+                cmd_paths.append(r[0])
+        if any(matches(p, accepts) for p in cmd_paths):
             g_found += 1
     return buried, g_found
 
@@ -177,24 +189,24 @@ def main():
     sess, nm_map = load_session()
 
     print(f"basket={len(BASKET)} golden={len(GOLDEN)} (Stage-1 top-{TOPK})\n")
-    print(f"{'cand':9s} {'pw_lin':7s} {'pw_cube':8s} {'cold':5s}  buried/__  golden/__")
-    configs = [
-        # (cand_strategy, pw_lin, pw_cube, cold_floor)
-        ("current", 0.0, 0.015, 1.0),   # baseline = db.rs today
-        ("or_syn",  0.0, 0.015, 1.0),
-        ("and_syn", 0.0, 0.015, 1.0),
-        ("and_syn", 0.0, 0.030, 1.0),
-        ("and_syn", 0.0, 0.030, 0.5),
-        ("and_syn", 0.0, 0.050, 0.5),
-        ("and_syn", 0.0, 0.050, 0.3),
-        ("and_syn", 0.0, 0.080, 0.3),
-        ("or_syn",  0.0, 0.050, 0.5),
-        ("or_syn",  0.0, 0.080, 0.3),
-    ]
-    for cand, pl, pc, cf in configs:
-        b, g = eval_config(conn, sess, nm_map, vocab, cand, pl, pc, cf)
-        flag = "  <- baseline" if (cand, pl, pc, cf) == ("current", 0.0, 0.015, 1.0) else ""
-        print(f"{cand:9s} {pl:<7.3f} {pc:<8.3f} {cf:<5.2f}  {b:2d}/{len(BASKET)}     {g:2d}/{len(GOLDEN)}{flag}")
+    print(f"{'cand':9s} {'pw_lin':7s} {'pw_cube':8s} {'cold':5s} {'w_name':6s} {'w_desc':6s} buried/__  golden/__")
+
+    # Always evaluate baseline first
+    b, g = eval_config(conn, sess, nm_map, vocab, "current", 0.0, 0.015, 1.0, 5.0, 2.0)
+    print(f"{'current':9s} {0.0:<7.3f} {0.015:<8.3f} {1.0:<5.2f} {5.0:<6.1f} {2.0:<6.1f}  {b:2d}/{len(BASKET)}     {g:2d}/{len(GOLDEN)}  <- baseline")
+
+    configs = []
+    # Sweep candidate strategies, cubed pop weights, cold floors, name weight, and desc weight
+    for cand in ["and_syn"]:
+        for pc in [0.015, 0.020]:
+            for cf in [0.5, 0.7, 1.0]:
+                for wn in [1.0, 2.0, 3.0, 5.0]:
+                    for wd in [2.0, 3.0, 5.0]:
+                        configs.append((cand, 0.0, pc, cf, wn, wd))
+
+    for cand, pl, pc, cf, wn, wd in configs:
+        b, g = eval_config(conn, sess, nm_map, vocab, cand, pl, pc, cf, wn, wd)
+        print(f"{cand:9s} {pl:<7.3f} {pc:<8.3f} {cf:<5.2f} {wn:<6.1f} {wd:<6.1f}  {b:2d}/{len(BASKET)}     {g:2d}/{len(GOLDEN)}")
 
 
 if __name__ == "__main__":

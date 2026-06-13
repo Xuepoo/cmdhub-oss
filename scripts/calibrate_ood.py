@@ -58,6 +58,11 @@ SYNONYMS = {
     "deploy": ["apply", "install"], "deployment": ["apply", "install"],
     "history": ["log", "commits"],
     "cat": ["bat", "less", "pager"],
+    "fuzzy": ["fzf", "skim", "finder"],
+    "finder": ["find", "fd"],
+    "download": ["curl", "wget"],
+    "diff": ["delta", "difft"],
+    "grep": ["ripgrep", "rg"],
 }
 
 

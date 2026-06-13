@@ -82,6 +82,10 @@ fn concept_synonyms(token: &str) -> &'static [&'static str] {
         "history" => &["log", "commits"],
         "cat" => &["bat", "less", "pager"],
         "fuzzy" => &["fzf", "skim", "finder"],
+        "finder" => &["find", "fd"],
+        "download" => &["curl", "wget"],
+        "diff" => &["delta", "difft"],
+        "grep" => &["ripgrep", "rg"],
         _ => &[],
     }
 }
@@ -235,7 +239,32 @@ pub fn search_cascading(
     }
 
     let processed_query = if and_match {
-        and_query.clone()
+        let base_tokens: Vec<String> = cleaned_query
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|w| !w.is_empty())
+            .map(|w| w.to_lowercase())
+            .collect();
+
+        let mut syn_terms = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for w in &base_tokens {
+            seen.insert(w.clone());
+        }
+
+        for w in &base_tokens {
+            for syn in concept_synonyms(w) {
+                let syn_str = (*syn).to_string();
+                if seen.insert(syn_str.clone()) {
+                    syn_terms.push(format!("{}*", syn_str));
+                }
+            }
+        }
+
+        if syn_terms.is_empty() {
+            and_query.clone()
+        } else {
+            format!("({}) OR {}", and_query, syn_terms.join(" OR "))
+        }
     } else {
         or_query.clone()
     };
@@ -348,6 +377,10 @@ pub fn search_cascading(
     } else {
         (0.0, 0.015)
     };
+    let cold_floor = std::env::var("CMDH_COLD_FLOOR")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.85);
     let mut top_apps = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
@@ -385,7 +418,7 @@ pub fn search_cascading(
             ), \
             scored AS ( \
                 SELECT app_id, nm, \
-                       COALESCE(1.0 / (60.0 + fts_pos), 0.0) \
+                       COALESCE((:cold_floor + (1.0 - :cold_floor) * pop) * 1.0 / (60.0 + fts_pos), 0.0) \
                        + COALESCE(1.0 / (60.0 + vec_pos), 0.0) \
                        + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
                 FROM pop_ranked \
@@ -404,6 +437,7 @@ pub fn search_cascading(
                 ":query_vector": vb,
                 ":pw_lin": pw_lin,
                 ":pw_cube": pw_cube,
+                ":cold_floor": cold_floor,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -423,14 +457,15 @@ pub fn search_cascading(
                 GROUP BY arg.app_id \
             ), \
             pop_ranked AS ( \
-                SELECT fo.app_id, fo.fts_pos, a.name as nm, \
+                SELECT ftso.app_id, ftso.fts_pos, a.name as nm, \
                        COALESCE(a.popularity, 0.0) as pop, \
                        row_number() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
-                FROM fts_ordered fo JOIN apps a ON fo.app_id = a.app_id \
+                FROM fts_ordered ftso JOIN apps a ON ftso.app_id = a.app_id \
             ), \
             scored AS ( \
                 SELECT app_id, nm, \
-                       (1.0 / (60.0 + fts_pos)) + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
+                       COALESCE((:cold_floor + (1.0 - :cold_floor) * pop) * 1.0 / (60.0 + fts_pos), 0.0) \
+                       + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
                 FROM pop_ranked \
             ), \
             name_deduped AS ( \
@@ -446,6 +481,7 @@ pub fn search_cascading(
                 ":query": &cand_query,
                 ":pw_lin": pw_lin,
                 ":pw_cube": pw_cube,
+                ":cold_floor": cold_floor,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -1043,6 +1079,10 @@ mod tests {
         assert!(concept_synonyms("purge").contains(&"prune"));
         assert!(concept_synonyms("prune").contains(&"unused"));
         assert!(concept_synonyms("fuzzy").contains(&"fzf"));
+        assert!(concept_synonyms("finder").contains(&"fd"));
+        assert!(concept_synonyms("download").contains(&"curl"));
+        assert!(concept_synonyms("diff").contains(&"delta"));
+        assert!(concept_synonyms("grep").contains(&"ripgrep"));
     }
 
     #[test]
