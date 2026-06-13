@@ -70,6 +70,26 @@ def test_dedup_keeps_distinct_subcommands_apart():
     assert len(out) == 2  # different leaves never merge
 
 
+def test_dedup_prefers_canonical_path_row_over_fragment():
+    # Both inferred: keep the row whose own path IS canonical (`podman.image.prune`,
+    # real binary `podman`) over the fused fragment (`podman-image.prune`, whose
+    # binary `podman-image` doesn't exist and would break `cmdh run`) — even when the
+    # fragment's app is more popular.
+    args = [
+        {"cmd_path": "podman-image.prune", "app_id": "frag", "node_name": "prune",
+         "description": "remove unused images", "risk_level": "dangerous",
+         "topics": "fragtopic", "provenance": "inferred"},
+        {"cmd_path": "podman.image.prune", "app_id": "canon", "node_name": "prune",
+         "description": "Remove unused images.", "risk_level": "dangerous",
+         "topics": "canontopic", "provenance": "inferred"},
+    ]
+    apps = [{"app_id": "frag", "popularity": 0.9}, {"app_id": "canon", "popularity": 0.2}]
+    out = build_db._canonicalize_and_dedup(args, apps)
+    assert len(out) == 1
+    assert out[0]["cmd_path"] == "podman.image.prune"
+    assert "fragtopic" in out[0]["topics"]
+
+
 def test_dedup_falls_back_to_popularity_when_no_probe():
     args = [
         {"cmd_path": "tool-image.prune", "app_id": "lo", "node_name": "prune",

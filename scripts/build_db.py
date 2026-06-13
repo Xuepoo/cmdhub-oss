@@ -318,11 +318,19 @@ def _canonicalize_and_dedup(arguments: list[dict], apps: list[dict]) -> list[dic
 
     out: list[dict] = []
     merged = 0
-    for rows in groups.values():
+    for canon, rows in groups.items():
         if len(rows) == 1:
             out.append(rows[0])
             continue
-        rows.sort(key=lambda r: (r.get("provenance") != "probe", -pop.get(r["app_id"], 0.0)))
+        # Keep preference: probe-verified first; then the row whose OWN path already is
+        # the canonical one (its binary really exists — a fused-root fragment like
+        # `podman-image.prune` names a binary that doesn't, which would break `cmdh run`);
+        # then highest popularity.
+        rows.sort(key=lambda r: (
+            r.get("provenance") != "probe",
+            r["cmd_path"].lower() != canon,
+            -pop.get(r["app_id"], 0.0),
+        ))
         keep = rows[0]
         topic_set: list[str] = []
         for r in rows:
