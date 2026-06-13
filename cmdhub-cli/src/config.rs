@@ -122,7 +122,8 @@ pub fn load_or_create_config(custom_path: Option<PathBuf>) -> Result<Config> {
         Ok(default_config)
     } else {
         let toml_str = fs::read_to_string(&config_path).context("Failed to read config file")?;
-        let mut config: Config = toml::from_str(&toml_str).context("Failed to parse config TOML")?;
+        let mut config: Config =
+            toml::from_str(&toml_str).context("Failed to parse config TOML")?;
 
         // Cloud-native overrides via Environment Variables
         if let Ok(api_url) = std::env::var("CMDH_API_URL") {

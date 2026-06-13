@@ -290,12 +290,15 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
             let is_int8 = vec.embedding.len() == 384;
             if is_int8 || vec.embedding.len() == 512 {
                 let vec_bytes: Vec<u8> = if is_int8 {
-                    vec.embedding.iter().map(|&v| {
-                        (v * 127.0).round().clamp(-128.0, 127.0) as i8 as u8
-                    }).collect()
+                    vec.embedding
+                        .iter()
+                        .map(|&v| (v * 127.0).round().clamp(-128.0, 127.0) as i8 as u8)
+                        .collect()
                 } else {
                     let mut b = Vec::with_capacity(512 * 4);
-                    for &val in &vec.embedding { b.extend_from_slice(&val.to_ne_bytes()); }
+                    for &val in &vec.embedding {
+                        b.extend_from_slice(&val.to_ne_bytes());
+                    }
                     b
                 };
                 let _ = tx.execute(

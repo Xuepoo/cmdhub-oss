@@ -173,7 +173,8 @@ pub fn search_cascading(
     // 384-dim vectors but an older database may still store float[512] (zero-padded).
     // When there is a mismatch, pad (or truncate) the query vector so KNN succeeds.
     // Once the database is rebuilt with 384-dim embeddings this branch is never taken.
-    let adapted_query_vector: Option<Vec<f32>>;
+    #[allow(unused_assignments)]
+    let mut adapted_query_vector = None;
     let query_vector: Option<&[f32]> = if enable_vector {
         if let (Some(q), Some(db_dim)) = (query_vector, detect_vec_dim(conn)) {
             if q.len() != db_dim {
@@ -183,15 +184,12 @@ pub fn search_cascading(
                 adapted_query_vector = Some(adapted);
                 adapted_query_vector.as_deref()
             } else {
-                adapted_query_vector = None;
                 query_vector
             }
         } else {
-            adapted_query_vector = None;
             query_vector
         }
     } else {
-        adapted_query_vector = None;
         query_vector
     };
 
@@ -1082,7 +1080,10 @@ mod tests {
         // rank first via the provenance prior, and `verified` must surface in output.
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn).unwrap();
-        for (app, prov) in [("org.inferred.tool", "inferred"), ("org.probed.tool", "probe")] {
+        for (app, prov) in [
+            ("org.inferred.tool", "inferred"),
+            ("org.probed.tool", "probe"),
+        ] {
             let name = if prov == "probe" { "toolp" } else { "tooli" };
             conn.execute(
                 "INSERT INTO apps (app_id, name, install_instructions) VALUES (?, ?, '{}')",
