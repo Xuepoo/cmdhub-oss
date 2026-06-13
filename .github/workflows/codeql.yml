@@ -1,0 +1,48 @@
+name: "CodeQL"
+
+# CodeQL lives in THIS repo (cmdhub-oss is public → CodeQL is free here) rather than the
+# private superproject, which would need GitHub Advanced Security and a PAT to clone the
+# private submodules. This scans the Rust core (cli/shared/mcp/skills) + the Python scripts.
+
+on:
+  push:
+    branches: [ "main", "feat/milestone-8-packaging-security" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+  schedule:
+    - cron: '30 2 * * 0' # weekly, Sundays 02:30 UTC
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'python', 'rust' ]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ matrix.language }}
+
+    # Rust needs a build for CodeQL to trace the compilation; this is a single workspace
+    # at the repo root (cmdhub-cli, cmdhub-shared, cmdhub-mcp, cmdhub-skills). No DB needed.
+    - name: Build Rust code
+      if: matrix.language == 'rust'
+      run: cargo build --workspace
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:${{matrix.language}}"
