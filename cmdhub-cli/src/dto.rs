@@ -7,11 +7,13 @@ use serde::Serialize;
 pub struct UsageDto {
     pub cmd_path: String,
     pub example_template: Option<String>,
+    pub confidence: String,
 }
 
 #[derive(Serialize)]
 pub struct MinimalDto {
     pub cmd_path: String,
+    pub confidence: String,
 }
 
 #[derive(Serialize)]
@@ -34,6 +36,7 @@ pub struct FullDto {
     pub script_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+    pub confidence: String,
 }
 
 pub fn resolve_install_command(contract: &AciCommandContract, config: &Config) -> Option<String> {
@@ -216,6 +219,7 @@ pub fn format_results(
                 .map(|c| UsageDto {
                     cmd_path: c.cmd_path,
                     example_template: c.example_template,
+                    confidence: c.confidence,
                 })
                 .collect();
             serde_json::to_value(&dtos).unwrap()
@@ -225,6 +229,7 @@ pub fn format_results(
                 .into_iter()
                 .map(|c| MinimalDto {
                     cmd_path: c.cmd_path,
+                    confidence: c.confidence,
                 })
                 .collect();
             serde_json::to_value(&dtos).unwrap()
@@ -254,6 +259,7 @@ pub fn format_results(
                         docker_image: c.docker_image,
                         script_url: c.script_url,
                         source_url: c.source_url,
+                        confidence: c.confidence,
                     }
                 })
                 .collect();
@@ -291,6 +297,7 @@ mod tests {
             source_url: None,
             popularity: 0.0,
             verified: false,
+            confidence: "high".to_string(),
         };
 
         let mut config = Config::default();
@@ -335,6 +342,7 @@ mod tests {
             source_url: None,
             popularity: 0.0,
             verified: false,
+            confidence: "high".to_string(),
         };
 
         let mut config = Config::default();

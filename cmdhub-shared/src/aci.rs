@@ -146,6 +146,13 @@ pub struct AciCommandContract {
     /// should prefer verified contracts and treat inferred examples with caution.
     #[serde(default)]
     pub verified: bool,
+    /// Search confidence rating: "high", "low", or "none"
+    #[serde(default = "default_confidence")]
+    pub confidence: String,
+}
+
+fn default_confidence() -> String {
+    "high".to_string()
 }
 
 /// Metadata about the local offline database.
@@ -380,6 +387,7 @@ impl TryFrom<DbAciRecord> for AciCommandContract {
             source_url: record.source_url,
             popularity: record.popularity,
             verified: record.provenance.as_deref() == Some("probe"),
+            confidence: "high".to_string(),
         })
     }
 }
@@ -480,6 +488,7 @@ mod tests {
             source_url: None,
             popularity: 0.0,
             verified: false,
+            confidence: "high".to_string(),
         };
 
         let json = serde_json::to_string(&contract).unwrap();
@@ -525,6 +534,7 @@ mod tests {
             source_url: Some("https://github.com/mtoyoda/sl".to_string()),
             popularity: 0.8,
             verified: false,
+            confidence: "high".to_string(),
         };
 
         // Test node_name extraction

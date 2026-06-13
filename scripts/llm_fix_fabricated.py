@@ -98,7 +98,7 @@ def call_llm(s: requests.Session, key: str, model: str, cmd_path: str, desc: str
         f"description: {desc}\n"
         f"invalid_example: {invalid_ex}"
     )
-    
+
     body = {
         "model": model,
         "temperature": 0.1,
@@ -107,7 +107,7 @@ def call_llm(s: requests.Session, key: str, model: str, cmd_path: str, desc: str
             {"role": "user", "content": user_content}
         ]
     }
-    
+
     for attempt in range(4):
         try:
             r = s.post(
@@ -121,7 +121,7 @@ def call_llm(s: requests.Session, key: str, model: str, cmd_path: str, desc: str
                 continue
             r.raise_for_status()
             res_text = r.json()["choices"][0]["message"]["content"].strip()
-            
+
             # Parse JSON out of response
             start = res_text.find("{")
             end = res_text.rfind("}")
@@ -142,14 +142,14 @@ def db_writer(db_path: str, write_queue: queue.Queue, total_to_write: int, stop_
     # Enable WAL mode for concurrency and performance
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    
+
     written = 0
     while not stop_event.is_set() or not write_queue.empty():
         try:
             item = write_queue.get(timeout=1.0)
         except queue.Empty:
             continue
-            
+
         cmd_path, new_example = item
         try:
             conn.execute(
@@ -170,7 +170,7 @@ def db_writer(db_path: str, write_queue: queue.Queue, total_to_write: int, stop_
             print(f"[db-writer] Error updating {cmd_path}: {e}", file=sys.stderr)
         finally:
             write_queue.task_done()
-            
+
     conn.commit()
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.close()
@@ -197,13 +197,13 @@ def main() -> None:
     print(f"[llm-clean] Reading database {db_path}...")
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    
+
     # Detect if provenance column exists in arguments table
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(arguments)")
     cols = {row[1] for row in cursor.fetchall()}
     prov_sel = "provenance" if "provenance" in cols else "'inferred' AS provenance"
-    
+
     rows = conn.execute(
         f"SELECT cmd_path, description, example_template, {prov_sel} FROM arguments "
         "WHERE example_template IS NOT NULL AND example_template != ''"
@@ -230,7 +230,7 @@ def main() -> None:
     write_queue = queue.Queue()
     stop_event = threading.Event()
     writer_thread = threading.Thread(
-        target=db_writer, 
+        target=db_writer,
         args=(str(db_path), write_queue, total, stop_event)
     )
     writer_thread.start()
@@ -244,13 +244,13 @@ def main() -> None:
     def worker(item):
         cmd = item["cmd_path"]
         corrected = call_llm(s, key, args.model, cmd, item["description"], item["example_template"])
-        
+
         with lock:
             completed[0] += 1
             if corrected:
                 # Queue the write
                 write_queue.put((cmd, corrected))
-                
+
                 # Check validation of the corrected version
                 if is_fabricated(cmd, corrected):
                     # Flag if the LLM output itself still fails heuristics
@@ -271,11 +271,11 @@ def main() -> None:
             pool.map(worker, todo)
     except KeyboardInterrupt:
         print("\n[llm-clean] Interrupted by user. Wrapping up database writes...")
-    
+
     # Wait for writer to finish saving all queue items
     stop_event.set()
     writer_thread.join()
-    
+
     print(f"[llm-clean] Done. Processed {completed[0]} entries in {(time.time()-t0)/60:.1f}min. Failures: {failed[0]}")
 
 

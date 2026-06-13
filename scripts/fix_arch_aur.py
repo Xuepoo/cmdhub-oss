@@ -5,7 +5,7 @@ The original Arch crawl labelled many packages as `pacman -S X` even when X only
 exists in the AUR (e.g. `s`, `scc`), so the command fails on a stock Arch box.
 This pass reclassifies each pacman entry:
 
-  * package in an OFFICIAL repo (checked locally via `pacman -Slq`, no network)
+  * package in an OFFICIAL repo (checked locally via `pacman -Sql`, no network)
         → keep `pacman -S X`
   * not official but present in the AUR (batch AUR RPC)
         → replace with `yay -S X` + `paru -S X`, drop the bogus `pacman`
@@ -30,10 +30,10 @@ import requests
 def _official_set() -> set[str]:
     """All package names available in the local sync repos (core/extra/multilib...)."""
     try:
-        out = subprocess.run(["pacman", "-Slq"], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["pacman", "-Sql"], capture_output=True, text=True, timeout=30)
         return {l.strip() for l in out.stdout.splitlines() if l.strip()}
     except Exception as e:
-        print(f"[warn] pacman -Slq failed ({e}); cannot verify official packages", file=sys.stderr)
+        print(f"[warn] pacman -Sql failed ({e}); cannot verify official packages", file=sys.stderr)
         return set()
 
 

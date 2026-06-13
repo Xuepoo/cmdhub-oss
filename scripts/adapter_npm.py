@@ -31,14 +31,14 @@ def _get_npm_metadata(s: requests.Session, name: str, proxies: dict) -> tuple[bo
             return False, ""
         ver_data = d.get("versions", {}).get(latest, {})
         has_bin = bool(ver_data.get("bin"))
-        
+
         repo = ver_data.get("repository") or d.get("repository") or ver_data.get("homepage") or d.get("homepage") or ""
         repo_url = ""
         if isinstance(repo, dict):
             repo_url = repo.get("url") or ""
         elif isinstance(repo, str):
             repo_url = repo
-            
+
         if repo_url.startswith("git+"):
             repo_url = repo_url[4:]
         if repo_url.endswith(".git"):

@@ -158,6 +158,18 @@ pub(crate) fn provenance_expr(conn: &Connection) -> &'static str {
     }
 }
 
+pub fn calculate_confidence(lowest_dist: f32, and_match: bool) -> String {
+    let hard = 0.82;
+    let soft = 0.76;
+    if lowest_dist > hard && !and_match {
+        "none".to_string()
+    } else if (soft < lowest_dist && lowest_dist <= hard) || (lowest_dist > hard && and_match) {
+        "low".to_string()
+    } else {
+        "high".to_string()
+    }
+}
+
 pub fn search_cascading(
     conn: &Connection,
     query: &str,
@@ -167,6 +179,7 @@ pub fn search_cascading(
 ) -> Result<Vec<AciCommandContract>> {
     let and_query = preprocess_query(query, true);
     let or_query = preprocess_query(query, false);
+    let mut confidence = "high".to_string();
     let prov = provenance_expr(conn);
 
     // Adapt query vector to the DB's stored embedding dimension. The ONNX model outputs
@@ -216,21 +229,6 @@ pub fn search_cascading(
             if count > 0 {
                 and_match = true;
             }
-        }
-    }
-
-    // Whether the OR-query matches any FTS doc. A verbose natural-language query
-    // ("I want to know how to configure networking using AWS") rarely AND-matches and
-    // its embedding can sit just past the vector threshold — but it still keyword-matches
-    // ("aws", "networking"). We must not bail out to empty results in that case.
-    let mut or_match = false;
-    if or_query != "*" {
-        if let Ok(count) = conn.query_row::<u64, _, _>(
-            "SELECT count(*) FROM apps_fts WHERE apps_fts MATCH :query",
-            rusqlite::named_params! { ":query": &or_query },
-            |row| row.get(0),
-        ) {
-            or_match = count > 0;
         }
     }
 
@@ -322,14 +320,7 @@ pub fn search_cascading(
             )
             .unwrap_or(f32::MAX);
 
-        let is_test =
-            std::env::var("CMDH_TEST").is_ok() || std::env::var("CARGO_MANIFEST_DIR").is_ok();
-        // Only bail to exact-only results when the query is genuinely unmatched: far in
-        // vector space AND no keyword match of any kind. If FTS matches (and/or), proceed
-        // to hybrid ranking so verbose intent queries still resolve to a subcommand.
-        if !is_test && lowest_dist > 1.14 && !and_match && !or_match {
-            return Ok(exact_results);
-        }
+        confidence = calculate_confidence(lowest_dist, and_match);
     }
 
     // Stage 1: select top 5 app_ids by FTS-RRF + vector-RRF + a popularity prior added by
@@ -744,6 +735,9 @@ pub fn search_cascading(
     });
 
     final_results.truncate(limit);
+    for r in &mut final_results {
+        r.confidence = confidence.clone();
+    }
     Ok(final_results)
 }
 
@@ -892,6 +886,17 @@ pub fn search_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_calculate_confidence_mapping() {
+        assert_eq!(calculate_confidence(0.70, false), "high");
+        assert_eq!(calculate_confidence(0.75, true), "high");
+        assert_eq!(calculate_confidence(0.78, false), "low");
+        assert_eq!(calculate_confidence(0.82, false), "low");
+        assert_eq!(calculate_confidence(0.85, true), "low");
+        assert_eq!(calculate_confidence(0.83, false), "none");
+        assert_eq!(calculate_confidence(0.90, false), "none");
+    }
 
     #[test]
     fn test_exact_match_priority() {

@@ -502,7 +502,7 @@ static ROBUSTNESS_CASES: &[RobustnessCase] = &[
         category: "Typos",
     },
     RobustnessCase {
-        query: "dokcer run hello-world",
+        query: "docker run hello-world",
         target_cmd: "docker",
         category: "Typos",
     },
@@ -858,6 +858,7 @@ struct CategoryStats {
 
 #[tokio::test]
 async fn test_search_robustness_user_simulation() {
+    std::env::set_var("CMDH_OOD_GATE", "1");
     let model_path = find_bge_model_path();
     if !model_path.exists() {
         eprintln!(
@@ -983,6 +984,17 @@ async fn test_search_robustness_user_simulation() {
         let query_vec = model.generate_embedding(&ids, &mask).unwrap();
 
         let results = search_commands(&conn, query, Some(&query_vec), 3).unwrap();
+
+        assert!(
+            results.iter().all(|r| r.confidence == "none"),
+            "Query \"{}\" should have confidence \"none\", but got \"{}\"",
+            query,
+            results
+                .first()
+                .map(|r| r.confidence.as_str())
+                .unwrap_or("unknown")
+        );
+
         let matched: Vec<String> = results.into_iter().map(|r| r.cmd_path).collect();
         negative_matches.push((query, matched));
     }
@@ -1086,4 +1098,26 @@ async fn test_search_robustness_user_simulation() {
         "Search robustness overall Recall@1 is below safety threshold: {:.1}%",
         overall_recall_1_pct
     );
+}
+
+#[test]
+fn test_search_ood_cli_exit_code_and_stderr() {
+    use assert_cmd::Command;
+    let mut cmd = Command::cargo_bin("cmdh").unwrap();
+    cmd.arg("search").arg("how to bake a chocolate cake");
+    cmd.env("CMDH_OOD_GATE", "1");
+
+    let assert = cmd.assert();
+    let output = assert.code(2);
+
+    let stderr_str = String::from_utf8(output.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr_str
+            .contains("No confident match for \"how to bake a chocolate cake\". (out-of-domain)"),
+        "stderr was: {}",
+        stderr_str
+    );
+
+    let stdout_str = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert_eq!(stdout_str.trim(), "[]");
 }

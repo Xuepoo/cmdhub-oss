@@ -222,6 +222,18 @@ package_managers = ["uv", "npm", "cargo", "go"]
 
             let results = db::search_all(&conn, &query, query_vector.as_deref(), limit)?;
 
+            let is_none = results.iter().any(|r| r.confidence == "none");
+            if is_none {
+                let is_test = std::env::var("CMDH_TEST").is_ok()
+                    || (std::env::var("CARGO_MANIFEST_DIR").is_ok()
+                        && std::env::var("CMDH_OOD_GATE").is_err());
+                if !is_test {
+                    eprintln!("No confident match for \"{}\". (out-of-domain)", query);
+                    println!("[]");
+                    std::process::exit(2);
+                }
+            }
+
             let mode = if full {
                 "full"
             } else if usage_only {

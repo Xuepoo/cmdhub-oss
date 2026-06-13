@@ -29,6 +29,7 @@ fn test_platform_install_command_resolution() {
         source_url: None,
         popularity: 0.0,
         verified: false,
+        confidence: "high".to_string(),
     };
 
     // 1. Ubuntu/Debian mapping (APT) with sudo check
@@ -105,6 +106,7 @@ fn test_platform_os_aliases_probing() {
         source_url: None,
         popularity: 0.0,
         verified: false,
+        confidence: "high".to_string(),
     };
 
     let mut config = Config::default();

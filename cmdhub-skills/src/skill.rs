@@ -230,6 +230,7 @@ mod tests {
             source_url: None,
             popularity: 0.0,
             verified: false,
+            confidence: "high".to_string(),
         };
 
         let contract2 = AciCommandContract {
@@ -247,6 +248,7 @@ mod tests {
             source_url: None,
             popularity: 0.0,
             verified: false,
+            confidence: "high".to_string(),
         };
 
         let dummy_skill = DummySkill {
@@ -288,6 +290,7 @@ mod tests {
             source_url: None,
             popularity: 0.0,
             verified: false,
+            confidence: "high".to_string(),
         };
 
         let sl_json_path = temp_dir.join("sl.json");
@@ -309,6 +312,7 @@ mod tests {
             source_url: None,
             popularity: 0.0,
             verified: false,
+            confidence: "high".to_string(),
         };
         let git_json_path = temp_dir.join("git.json");
         let git_json_content = serde_json::to_string(&vec![contract_git]).unwrap();
@@ -331,6 +335,7 @@ mod tests {
             source_url: None,
             popularity: 0.0,
             verified: false,
+            confidence: "high".to_string(),
         };
         let tar_json_path = sub_dir.join("tar.json");
         let tar_json_content = serde_json::to_string(&contract_tar).unwrap();

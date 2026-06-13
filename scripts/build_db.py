@@ -297,7 +297,7 @@ def _clean_cmd_path(cmd_path: str) -> str:
     path = path.replace("docker_compose.up_project", "docker.compose.up")
     path = path.replace("docker_compose.logs_container", "docker.compose.logs")
     path = path.replace("docker_compose", "docker.compose")
-    
+
     # 2. Split by whitespace and discard any segment starting with '-' (and all subsequent segments)
     parts = path.split()
     cleaned_parts = []
@@ -306,12 +306,12 @@ def _clean_cmd_path(cmd_path: str) -> str:
             break
         cleaned_parts.append(p)
     path = ".".join(cleaned_parts)
-    
+
     # 3. Collapse multiple consecutive dots and strip leading/trailing dots
     while ".." in path:
         path = path.replace("..", ".")
     path = path.strip(".")
-    
+
     return path
 
 

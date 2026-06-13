@@ -186,6 +186,7 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
             source_url: None,
             popularity: 0.0,
             verified: true,
+            confidence: "high".to_string(),
         };
 
         // Insert database contract

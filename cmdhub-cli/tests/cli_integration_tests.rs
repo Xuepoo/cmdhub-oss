@@ -341,6 +341,7 @@ fn test_skills_integration() {
         source_url: None,
         popularity: 0.0,
         verified: false,
+        confidence: "high".to_string(),
     };
 
     let json_content = serde_json::to_string(&contract_custom).unwrap();
