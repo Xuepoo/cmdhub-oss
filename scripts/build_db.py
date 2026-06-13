@@ -306,70 +306,30 @@ def _canonical_path(cmd_path: str) -> str:
 
 
 def _canonicalize_and_dedup(arguments: list[dict], apps: list[dict]) -> list[dict]:
-    """Merge unambiguous cross-source duplicates: identical canonical FULL path,
-    SUBCOMMANDS ONLY. Root rows are never merged — a root is an app's identity anchor,
-    same-named roots are often DIFFERENT tools (npm's `rm` vs coreutils `rm`), and
-    merging them to one arbitrary app decouples the root from the app that owns the
-    real subcommand tree (breaking Stage-1 app selection). Name collisions among roots
-    are handled downstream (Stage-1 name-dedup, SEO aggregation pages) by design.
-
-    Keep preference within a merge group: probe-verified first; then the row whose OWN
-    path already is the canonical one (a fused-root fragment like `podman-image.prune`
-    names a binary that doesn't exist, breaking `cmdh run`); then the app with the
-    richest command tree (the consolidated real tool); then popularity; then app_id for
-    determinism. Dropped rows donate their topics. Runs BEFORE embedding so vectors are
-    computed on the final merged text."""
+    """Merge unambiguous cross-source duplicates: identical canonical FULL path.
+    Keep the probe row (else highest-popularity); union the dropped rows' topics into
+    the kept row so search recall survives the merge. Runs BEFORE embedding so vectors
+    are computed on the final merged text. Conservative by design: distinct
+    subcommands / distinct tools are never merged."""
     pop = {a["app_id"]: float(a.get("popularity") or 0.0) for a in apps}
-    tree_size: dict[str, int] = {}
-    for a in arguments:
-        tree_size[a["app_id"]] = tree_size.get(a["app_id"], 0) + 1
-
-    # Root OWNERSHIP reassignment: cmd_path is the offline PK, so only ONE app can hold
-    # a given root row — and whichever import won the race may be a near-empty namesake
-    # (com.example.podman, 2 cmds) while the consolidated tool (org.cmdhub.podman,
-    # 110 cmds) holds the whole subcommand tree but no root. Stage-1 app selection
-    # anchors on the root, so the root must belong to the same-named app with the
-    # richest tree (then popularity, then app_id for determinism).
-    name_by_app = {a["app_id"]: (a.get("name") or "").lower() for a in apps}
-    best_for_name: dict[str, str] = {}
-    for app_id, n in name_by_app.items():
-        if not n:
-            continue
-        cur = best_for_name.get(n)
-        if cur is None or (
-            tree_size.get(app_id, 0), pop.get(app_id, 0.0), cur
-        ) > (tree_size.get(cur, 0), pop.get(cur, 0.0), app_id):
-            best_for_name[n] = app_id
-
-    reassigned = 0
-    out: list[dict] = []
     groups: dict[str, list[dict]] = {}
     for a in arguments:
-        if "." not in a["cmd_path"]:
-            owner = best_for_name.get(a["cmd_path"].lower())
-            # Only move a root between apps that SHARE its name (npm's `rm` root moving
-            # to coreutils' richer `rm` app is same-name; never across different names).
-            if owner and owner != a["app_id"] and name_by_app.get(a["app_id"]) == a["cmd_path"].lower():
-                a = {**a, "app_id": owner}
-                reassigned += 1
-            out.append(a)  # roots are never merged, only re-anchored
-            continue
         groups.setdefault(_canonical_path(a["cmd_path"]), []).append(a)
-    if reassigned:
-        print(f"[build-db] Re-anchored {reassigned} root rows to their richest same-name app",
-              file=sys.stderr, flush=True)
 
+    out: list[dict] = []
     merged = 0
     for canon, rows in groups.items():
         if len(rows) == 1:
             out.append(rows[0])
             continue
+        # Keep preference: probe-verified first; then the row whose OWN path already is
+        # the canonical one (its binary really exists — a fused-root fragment like
+        # `podman-image.prune` names a binary that doesn't, which would break `cmdh run`);
+        # then highest popularity.
         rows.sort(key=lambda r: (
             r.get("provenance") != "probe",
             r["cmd_path"].lower() != canon,
-            -tree_size.get(r["app_id"], 0),
             -pop.get(r["app_id"], 0.0),
-            r["app_id"],
         ))
         keep = rows[0]
         topic_set: list[str] = []
