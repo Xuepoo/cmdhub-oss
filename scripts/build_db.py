@@ -312,6 +312,45 @@ def _canonicalize_and_dedup(arguments: list[dict], apps: list[dict]) -> list[dic
     are computed on the final merged text. Conservative by design: distinct
     subcommands / distinct tools are never merged."""
     pop = {a["app_id"]: float(a.get("popularity") or 0.0) for a in apps}
+    name_by_app = {a["app_id"]: (a.get("name") or "").lower() for a in apps}
+    # Commands per app across the whole registry — used as a tie-break, and to find the
+    # consolidated tool for root re-anchoring below.
+    tree_size: dict[str, int] = {}
+    for a in arguments:
+        tree_size[a["app_id"]] = tree_size.get(a["app_id"], 0) + 1
+
+    # ── Strict root re-anchoring ────────────────────────────────────────────
+    # A tool's ROOT row (cmd_path == binary) may have been imported under a near-empty
+    # namesake app while the CONSOLIDATED tool (its whole subcommand tree) lives under a
+    # different app that has NO root row — e.g. `podman` root @com.example.podman (2 cmds)
+    # but podman.image.prune & 108 more @org.cmdhub.podman. Stage-1 selects one app per
+    # name (by match score), so the namesake wins and the real tool's subcommands never
+    # surface. Re-anchor the root to the dominant same-name app — but ONLY when that app
+    # is OVERWHELMINGLY richer (>=20 cmds AND >=5x the current owner). This strict gate
+    # fires for clear consolidations (~18 major tools) and never for tools without a
+    # dominant variant (curl/wget/tar each have ~1 cmd) — which is what made the earlier
+    # tree-size-first version regress. Popularity is unaffected (these ties are all ~1.0).
+    richest_for_name: dict[str, str] = {}
+    for app_id, n in name_by_app.items():
+        if n and (n not in richest_for_name or tree_size.get(app_id, 0) > tree_size.get(richest_for_name[n], 0)):
+            richest_for_name[n] = app_id
+    reanchored = 0
+    for a in arguments:
+        if "." in a["cmd_path"]:
+            continue
+        n = a["cmd_path"].lower()
+        if name_by_app.get(a["app_id"]) != n:
+            continue  # only move a root among apps that share its exact name
+        target = richest_for_name.get(n)
+        if target and target != a["app_id"]:
+            t_tree, o_tree = tree_size.get(target, 0), tree_size.get(a["app_id"], 0)
+            if t_tree >= 20 and t_tree >= 5 * max(o_tree, 1):
+                a["app_id"] = target
+                reanchored += 1
+    if reanchored:
+        print(f"[build-db] Re-anchored {reanchored} roots to their consolidated tool app",
+              file=sys.stderr, flush=True)
+
     groups: dict[str, list[dict]] = {}
     for a in arguments:
         groups.setdefault(_canonical_path(a["cmd_path"]), []).append(a)
@@ -322,14 +361,21 @@ def _canonicalize_and_dedup(arguments: list[dict], apps: list[dict]) -> list[dic
         if len(rows) == 1:
             out.append(rows[0])
             continue
-        # Keep preference: probe-verified first; then the row whose OWN path already is
-        # the canonical one (its binary really exists — a fused-root fragment like
-        # `podman-image.prune` names a binary that doesn't, which would break `cmdh run`);
-        # then highest popularity.
+        # Keep preference (popularity stays PRIMARY so this never displaces a high-pop
+        # owner — that was the v3 regression): probe-verified first; then the row whose
+        # OWN path already is the canonical one (a fused-root fragment like
+        # `podman-image.prune` names a non-existent binary, breaking `cmdh run`); then
+        # highest popularity; then — only to break a popularity TIE (e.g. many podman
+        # apps all capped at 1.0) — the app with the richest command tree, i.e. the
+        # consolidated real tool (so the `podman` root lands on org.cmdhub.podman with
+        # 110 cmds, not the 2-command namesake, which lets Stage-1 select it); then
+        # app_id for determinism.
         rows.sort(key=lambda r: (
             r.get("provenance") != "probe",
             r["cmd_path"].lower() != canon,
             -pop.get(r["app_id"], 0.0),
+            -tree_size.get(r["app_id"], 0),
+            r["app_id"],
         ))
         keep = rows[0]
         topic_set: list[str] = []

@@ -102,3 +102,24 @@ def test_dedup_falls_back_to_popularity_when_no_probe():
     assert len(out) == 1
     assert out[0]["app_id"] == "hi"              # higher-popularity row kept
     assert "x" in out[0]["topics"] and "y" in out[0]["topics"]
+
+
+def test_strict_reanchor_moves_root_to_dominant_consolidated_app():
+    # podman root on a 2-cmd namesake; the 110-cmd consolidated app has the subtree but
+    # no root → re-anchor moves the root there (>=20 and >=5x). curl (no dominant app)
+    # is left alone.
+    args = [{"cmd_path": "podman", "app_id": "ns", "node_name": "podman",
+             "description": "d", "risk_level": "safe", "topics": "", "provenance": "inferred"}]
+    args += [{"cmd_path": f"podman.x{i}", "app_id": "real", "node_name": f"x{i}",
+              "description": "d", "risk_level": "safe", "topics": "", "provenance": "inferred"}
+             for i in range(40)]
+    args += [{"cmd_path": "curl", "app_id": "c", "node_name": "curl",
+              "description": "d", "risk_level": "safe", "topics": "", "provenance": "inferred"}]
+    apps = [{"app_id": "ns", "name": "podman", "popularity": 1.0},
+            {"app_id": "real", "name": "podman", "popularity": 1.0},
+            {"app_id": "c", "name": "curl", "popularity": 1.0}]
+    out = build_db._canonicalize_and_dedup(args, apps)
+    root = next(a for a in out if a["cmd_path"] == "podman")
+    assert root["app_id"] == "real"            # root re-anchored to the consolidated app
+    curl = next(a for a in out if a["cmd_path"] == "curl")
+    assert curl["app_id"] == "c"               # no dominant alt → untouched
