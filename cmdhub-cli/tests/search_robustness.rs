@@ -1106,6 +1106,7 @@ fn test_search_ood_cli_exit_code_and_stderr() {
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
     cmd.arg("search").arg("how to bake a chocolate cake");
     cmd.env("CMDH_OOD_GATE", "1");
+    cmd.env_remove("CMDH_TEST");
 
     let assert = cmd.assert();
     let output = assert.code(2);

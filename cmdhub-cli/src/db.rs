@@ -312,7 +312,6 @@ pub fn search_cascading(
                      WHERE embedding MATCH :query_vector AND k = 100 \
                  ) v \
                  JOIN arguments arg ON v.cmd_path = arg.cmd_path \
-                 WHERE arg.node_type = 'root' \
                  ORDER BY v.distance ASC \
                  LIMIT 1",
                 rusqlite::named_params! { ":query_vector": vb },
