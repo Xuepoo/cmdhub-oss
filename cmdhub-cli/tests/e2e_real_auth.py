@@ -54,7 +54,7 @@ def run_e2e_test():
         config_data = f.read()
 
     config_data = config_data.replace(
-        'api_url = "https://api.cmdhub.xyz"',
+        'api_url = "https://api.cmdhub.org"',
         'api_url = "http://127.0.0.1:8080/api/v1"'
     )
     with open(config_path, "w") as f:

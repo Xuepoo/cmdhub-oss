@@ -38,3 +38,6 @@ CLAUDE.md
 .agents
 .cursorrules
 tmp
+
+__pycache__/
+*.pyc

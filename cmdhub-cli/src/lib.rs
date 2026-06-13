@@ -8,6 +8,7 @@ pub mod dto;
 pub mod inference;
 pub mod installer;
 pub mod os_detector;
+pub mod robustness;
 pub mod runner;
 pub mod tokenizer;
 pub mod updater;
@@ -34,7 +35,7 @@ pub enum Commands {
         /// The query string to search for
         query: String,
         /// Maximum number of search results to return
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 5)]
         limit: usize,
         /// Force full preset output format
         #[arg(short, long, group = "output_format")]
@@ -125,7 +126,7 @@ pub async fn run() -> Result<()> {
             .collect();
         let config_content = format!(
             r#"# CmdHub configuration file
-api_url = "https://api.cmdhub.xyz"
+api_url = "https://cdn.cmdhub.org"
 public_key = "{default_key}"
 timeout_seconds = 30
 
@@ -162,8 +163,36 @@ package_managers = ["uv", "npm", "cargo", "go"]
     let config = config::load_or_create_config(cli.config.clone())?;
 
     // 3. Open DB connection and ensure initialized
-    let conn = db::open_db()?;
-    db::init_db(&conn)?;
+    // For `update --force`, if the DB is corrupted, delete it and create fresh.
+    // SQLite's Connection::open does NOT validate the file — corruption is only
+    // detected when executing SQL (init_db), so we must handle both failure sites.
+    let conn = {
+        let is_force_update = matches!(cli.command, Commands::Update { force: true });
+
+        let try_open_init = || -> Result<rusqlite::Connection> {
+            let c = db::open_db()?;
+            db::init_db(&c)?;
+            Ok(c)
+        };
+
+        match try_open_init() {
+            Ok(c) => c,
+            Err(e) if is_force_update => {
+                eprintln!(
+                    "Warning: database is corrupt or missing ({}), deleting and recreating...",
+                    e
+                );
+                let db_path = db::resolve_db_path();
+                if db_path.exists() {
+                    std::fs::remove_file(&db_path)?;
+                }
+                let c = db::open_db()?;
+                db::init_db(&c)?;
+                c
+            }
+            Err(e) => return Err(e),
+        }
+    };
 
     match cli.command {
         Commands::Search {
@@ -173,12 +202,13 @@ package_managers = ["uv", "npm", "cargo", "go"]
             usage_only,
             minimal,
         } => {
+            let robustness_query = robustness::preprocess_robustness(&query);
             let mut query_vector = None;
             match installer::ensure_model_installed(&config).await {
                 Ok(model_path) => {
                     if let Ok(model) = inference::EmbeddingModel::load(&model_path) {
                         let tokenizer = tokenizer::Tokenizer::new();
-                        let (ids, mask) = tokenizer.tokenize_query(&query);
+                        let (ids, mask) = tokenizer.tokenize_query(&robustness_query);
                         if let Ok(vec) = model.generate_embedding(&ids, &mask) {
                             query_vector = Some(vec);
                         }
@@ -192,7 +222,19 @@ package_managers = ["uv", "npm", "cargo", "go"]
                 }
             }
 
-            let results = db::search_all(&conn, &query, query_vector.as_deref(), limit)?;
+            let results = db::search_all(&conn, &robustness_query, query_vector.as_deref(), limit)?;
+
+            let is_none = results.iter().any(|r| r.confidence == "none");
+            if is_none {
+                let is_test = std::env::var("CMDH_TEST").is_ok()
+                    || (std::env::var("CARGO_MANIFEST_DIR").is_ok()
+                        && std::env::var("CMDH_OOD_GATE").is_err());
+                if !is_test {
+                    eprintln!("No confident match for \"{}\". (out-of-domain)", query);
+                    println!("[]");
+                    std::process::exit(2);
+                }
+            }
 
             let mode = if full {
                 "full"

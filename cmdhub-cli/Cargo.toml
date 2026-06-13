@@ -19,6 +19,10 @@ path = "src/main.rs"
 name = "cmdh-extractor"
 path = "src/bin/extractor.rs"
 
+[[bin]]
+name = "cmdh-build-db"
+path = "src/bin/build_db.rs"
+
 
 [dependencies]
 cmdhub-shared = { path = "../cmdhub-shared", version = "0.1.0" }
@@ -46,6 +50,7 @@ base64 = "0.22"
 tract-onnx = { workspace = true }
 flate2 = { workspace = true }
 libc = "0.2"
+which = { workspace = true }
 
 
 [dev-dependencies]

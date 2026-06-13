@@ -28,7 +28,7 @@ Below is a complete description of the parameters available inside `config.toml`
 
 ```toml
 # The API endpoint for online database synchronization
-api_url = "https://api.cmdhub.xyz"
+api_url = "https://api.cmdhub.org"
 
 [output]
 # Formatting preset for STDOUT query output JSON representation.

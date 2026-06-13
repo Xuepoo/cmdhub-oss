@@ -27,6 +27,7 @@ pub fn open_db() -> Result<Connection> {
     let conn = Connection::open(&db_path).context("Failed to open SQLite database file")?;
     let _ = conn.execute("PRAGMA journal_mode = WAL;", []);
     let _ = conn.execute("PRAGMA synchronous = NORMAL;", []);
+    let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
     Ok(conn)
 }
 
@@ -55,6 +56,56 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Domain concept → concrete terms the tools actually use. Bridges abstract
+/// natural-language queries to real command names (cloud CLIs say "vpc"/"subnet",
+/// not "networking"). Only applied to the OR-fallback query, so it never breaks
+/// precise AND matches — it just widens recall for vague intent queries.
+fn concept_synonyms(token: &str) -> &'static [&'static str] {
+    match token {
+        "networking" | "network" => &["vpc", "subnet", "gateway", "route", "firewall"],
+        "firewall" => &["security", "firewall", "acl"],
+        "storage" => &["bucket", "volume", "disk", "blob"],
+        "database" | "db" => &["database", "sql", "table", "rds"],
+        "serverless" => &["lambda", "function", "faas"],
+        "container" | "containers" => &["container", "image", "pod"],
+        "kubernetes" | "k8s" => &["pod", "deployment", "namespace", "cluster"],
+        "secret" | "secrets" => &["secret", "credential", "key", "vault"],
+        "dns" => &["dns", "domain", "record", "zone"],
+        // Intent verbs: user says "delete" but tools say "remove/unlink", etc.
+        "delete" | "erase" => &["remove", "unlink", "trash"],
+        "remove" => &["delete", "unlink"],
+        // Cleanup intent: "clear/clean unused images" must reach `prune`-style commands.
+        "clear" | "clean" | "cleanup" | "purge" => &["prune", "remove", "rm", "delete", "unused"],
+        "prune" => &["clean", "remove", "delete", "unused"],
+        "view" | "read" => &["show", "display"],
+        "deploy" | "deployment" => &["apply", "install"],
+        "history" => &["log", "commits"],
+        "cat" => &["bat", "less", "pager"],
+        "fuzzy" => &["fzf", "skim", "finder"],
+        "finder" => &["find", "fd"],
+        "download" => &["curl", "wget"],
+        "diff" => &["delta", "difft"],
+        "grep" => &["ripgrep", "rg"],
+        _ => &[],
+    }
+}
+
+/// Concept word → CANONICAL TOOL NAMES only. A strict subset of `concept_synonyms` safe to
+/// OR onto the AND-candidate (Stage-1 widening): every value is a specific binary name, so
+/// appending it surfaces the canonical tool a literal query misses (fzf for "fuzzy", rg for
+/// "grep") without flooding the candidate pool the way generic concept words do. Keep this
+/// list tool-names-only; never add generic verbs/nouns here (use `concept_synonyms` for those).
+fn tool_alias_synonyms(token: &str) -> &'static [&'static str] {
+    match token {
+        "fuzzy" => &["fzf", "skim"],
+        "finder" => &["fzf", "fd"],
+        "download" => &["curl", "wget", "aria2"],
+        "diff" => &["delta", "difft"],
+        "grep" => &["ripgrep", "rg"],
+        _ => &[],
+    }
+}
+
 fn preprocess_query(query: &str, use_and: bool) -> String {
     let stop_words: std::collections::HashSet<&str> = [
         "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by", "and",
@@ -64,31 +115,131 @@ fn preprocess_query(query: &str, use_and: bool) -> String {
     .cloned()
     .collect();
 
-    let words: Vec<String> = query
+    let base: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| !w.is_empty())
         .map(|w| w.to_lowercase())
         .filter(|w| !stop_words.contains(w.as_str()))
-        .map(|w| format!("{}*", w))
         .collect();
 
-    if words.is_empty() {
+    let mut terms: Vec<String> = base.iter().map(|w| format!("{}*", w)).collect();
+
+    // OR-query only: widen with domain synonyms so e.g. "configure networking" also
+    // matches vpc/subnet/gateway commands. AND-query stays strict (exact intent).
+    if !use_and {
+        let mut seen: std::collections::HashSet<String> = base.iter().cloned().collect();
+        for w in &base {
+            for syn in concept_synonyms(w) {
+                if seen.insert((*syn).to_string()) {
+                    terms.push(format!("{}*", syn));
+                }
+            }
+        }
+    }
+
+    if terms.is_empty() {
         "*".to_string()
     } else if use_and {
-        words.join(" ")
+        terms.join(" ")
     } else {
-        words.join(" OR ")
+        terms.join(" OR ")
     }
 }
 
-pub fn search_commands(
+/// Extract the embedding dimension declared in the commands_vec DDL, e.g. `float[384]` → 384.
+fn detect_vec_dim(conn: &Connection) -> Option<usize> {
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='commands_vec'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let pos = sql.find("float[")?;
+    let rest = &sql[pos + 6..];
+    let end = rest.find(']')?;
+    rest[..end].parse().ok()
+}
+
+/// SQL expression for the provenance column, tolerant of pre-provenance databases.
+/// A new client must keep working against an old DB (schema v1): when the column is
+/// absent we select the literal 'inferred' (unverified until proven) instead.
+pub(crate) fn provenance_expr(conn: &Connection) -> &'static str {
+    let has = conn
+        .query_row(
+            "SELECT 1 FROM pragma_table_info('arguments') WHERE name = 'provenance'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if has {
+        "arg.provenance"
+    } else {
+        "'inferred'"
+    }
+}
+
+pub fn calculate_confidence(lowest_dist: f32, and_match: bool) -> String {
+    let hard = 0.82;
+    let soft = 0.76;
+    if lowest_dist > hard && !and_match {
+        "none".to_string()
+    } else if (soft < lowest_dist && lowest_dist <= hard) || (lowest_dist > hard && and_match) {
+        "low".to_string()
+    } else {
+        "high".to_string()
+    }
+}
+
+pub fn search_cascading(
     conn: &Connection,
     query: &str,
     query_vector: Option<&[f32]>,
     limit: usize,
+    enable_vector: bool,
 ) -> Result<Vec<AciCommandContract>> {
-    let and_query = preprocess_query(query, true);
-    let or_query = preprocess_query(query, false);
+    let cleaned_query = crate::robustness::preprocess_robustness(query);
+    let and_query = preprocess_query(&cleaned_query, true);
+    let or_query = preprocess_query(&cleaned_query, false);
+    let mut confidence = "high".to_string();
+    let prov = provenance_expr(conn);
+
+    // Adapt query vector to the DB's stored embedding dimension. The ONNX model outputs
+    // 384-dim vectors but an older database may still store float[512] (zero-padded).
+    // When there is a mismatch, pad (or truncate) the query vector so KNN succeeds.
+    // Once the database is rebuilt with 384-dim embeddings this branch is never taken.
+    #[allow(unused_assignments)]
+    let mut adapted_query_vector = None;
+    let query_vector: Option<&[f32]> = if enable_vector {
+        if let (Some(q), Some(db_dim)) = (query_vector, detect_vec_dim(conn)) {
+            if q.len() != db_dim {
+                let mut adapted = vec![0.0f32; db_dim];
+                let copy_len = q.len().min(db_dim);
+                adapted[..copy_len].copy_from_slice(&q[..copy_len]);
+                adapted_query_vector = Some(adapted);
+                adapted_query_vector.as_deref()
+            } else {
+                query_vector
+            }
+        } else {
+            query_vector
+        }
+    } else {
+        query_vector
+    };
+
+    // Compute vec_bytes once; reused for all KNN queries below.
+    let vec_bytes: Option<Vec<u8>> = if enable_vector {
+        query_vector.map(|q_vec| {
+            let mut bytes = Vec::with_capacity(q_vec.len() * 4);
+            for &val in q_vec {
+                bytes.extend_from_slice(&val.to_le_bytes());
+            }
+            bytes
+        })
+    } else {
+        None
+    };
 
     let mut and_match = false;
     if and_query != "*" {
@@ -103,11 +254,48 @@ pub fn search_commands(
         }
     }
 
-    let processed_query = if and_match { and_query } else { or_query };
+    let processed_query = if and_match {
+        let base_tokens: Vec<String> = cleaned_query
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|w| !w.is_empty())
+            .map(|w| w.to_lowercase())
+            .collect();
 
-    // 1. Fast exact-match short-circuiting check (LOWER check for path/name)
+        let mut syn_terms = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for w in &base_tokens {
+            seen.insert(w.clone());
+        }
+
+        // Widen the AND candidate with TOOL-NAME synonyms only (fuzzy→fzf, grep→rg). These
+        // are specific binary names — OR-ing them in surfaces a canonical tool the literal
+        // AND query misses (fzf has no "file" token) WITHOUT flooding. Generic concept
+        // synonyms (kubernetes→namespace/cluster, view→show) are deliberately EXCLUDED here:
+        // OR-ing those on the AND path floods competitors and demotes the right tool
+        // (verified: it sank kubectl.logs below stern/kail for "kubernetes pod logs"). Those
+        // stay in the or-fallback path (concept_synonyms) for when there is no AND match.
+        for w in &base_tokens {
+            for syn in tool_alias_synonyms(w) {
+                let syn_str = (*syn).to_string();
+                if seen.insert(syn_str.clone()) {
+                    syn_terms.push(format!("{}*", syn_str));
+                }
+            }
+        }
+
+        if syn_terms.is_empty() {
+            and_query.clone()
+        } else {
+            format!("({}) OR {}", and_query, syn_terms.join(" OR "))
+        }
+    } else {
+        or_query.clone()
+    };
+    let cand_query = processed_query.clone();
+
+    // 1. Fast exact-match check (LOWER check for path/name)
     let trimmed_query = query.trim().to_lowercase();
-    let mut exact_stmt = conn.prepare(
+    let mut exact_stmt = conn.prepare(&format!(
         "SELECT \
             arg.app_id, \
             app.name, \
@@ -116,15 +304,19 @@ pub fn search_commands(
             arg.description, \
             arg.risk_level, \
             arg.example_template, \
+            app.os_aliases, \
             app.install_instructions, \
+            app.popularity, \
             arg.docker_image, \
             arg.script_url, \
-            arg.source_url \
+            arg.source_url, \
+            {prov} \
         FROM arguments arg \
         JOIN apps app ON arg.app_id = app.app_id \
-        WHERE LOWER(arg.cmd_path) = :query OR LOWER(app.name) = :query \
-        LIMIT :limit_num",
-    )?;
+        WHERE LOWER(arg.cmd_path) = :query \
+           OR (LOWER(app.name) = :query AND arg.node_type = 'root') \
+        LIMIT :limit_num"
+    ))?;
 
     let exact_rows = exact_stmt.query_map(
         rusqlite::named_params! {
@@ -140,10 +332,13 @@ pub fn search_commands(
                 description: row.get(4)?,
                 risk_level: row.get(5)?,
                 example_template: row.get(6)?,
-                install_instructions: row.get(7)?,
-                docker_image: row.get(8)?,
-                script_url: row.get(9)?,
-                source_url: row.get(10)?,
+                os_aliases: row.get(7)?,
+                install_instructions: row.get(8)?,
+                popularity: row.get(9)?,
+                docker_image: row.get(10)?,
+                script_url: row.get(11)?,
+                source_url: row.get(12)?,
+                provenance: row.get(13)?,
             })
         },
     )?;
@@ -155,7 +350,555 @@ pub fn search_commands(
         }
     }
 
-    // Check if commands_vec table exists and has any data
+    // 2. Stage 1 App Filter: Threshold check
+    // KNN query is isolated in a subquery first; the JOIN on arguments
+    // happens outside so SQLite can push the MATCH constraint correctly.
+    // vec0 uses L2 distance. For unit vectors (BGE-micro-v2):
+    //   cos_sim = 1 - L2_dist² / 2
+    //   cos_sim < 0.35 ↔ L2_dist > sqrt(2 * 0.65) ≈ 1.14
+    if let Some(ref vb) = vec_bytes {
+        let lowest_dist: f32 = conn
+            .query_row(
+                "SELECT v.distance \
+                 FROM ( \
+                     SELECT cmd_path, distance \
+                     FROM commands_vec \
+                     WHERE embedding MATCH :query_vector AND k = 100 \
+                 ) v \
+                 JOIN arguments arg ON v.cmd_path = arg.cmd_path \
+                 ORDER BY v.distance ASC \
+                 LIMIT 1",
+                rusqlite::named_params! { ":query_vector": vb },
+                |row| row.get(0),
+            )
+            .unwrap_or(f32::MAX);
+
+        confidence = calculate_confidence(lowest_dist, and_match);
+    }
+
+    // Stage 1: select top 5 app_ids by FTS-RRF + vector-RRF + a popularity prior added by
+    // VALUE (apps.popularity in [0,1], the cross-ecosystem repo-count from the Repology
+    // dump), with name dedup. This lifts the canonical tool for brand/concept words (az for
+    // "azure", kubectl for "kubernetes") even when its name/path only weakly matches, while
+    // staying gentle on multi-token task queries (see pop_w below). No hardcoded vendor
+    // list; new sources just need their popularity column filled. The FTS candidate limit
+    // is widened (300) so a canonical-but-weak-match tool still enters the pool.
+    // BM25 weights: cmd_path=0 (unindexed), name=5.0, capabilities=2.0.
+    // Raising capabilities weight helps description-based queries (e.g. "knowledge" → obsidian).
+    //
+    // Popularity prior (apps.popularity in [0,1], desaturated CAP=100 so values are distinct).
+    // Popularity form is gated by query type. A single bare token is a brand lookup
+    // ("azure") where no tool is strongly relevant: use a LINEAR, strong weight so the
+    // canonical tool (azure-cli 0.85) clearly beats a namesake (opensearch-azure 0.39).
+    // A multi-token query is a task description where one tool is usually strongly
+    // relevant: use a CUBED, gentle weight so only near-canonical tools (rm/git/bat ~1.0)
+    // get lifted for generic tasks, never burying a correct niche tool (vectomancy 0.24,
+    // 0.24^3 ≈ 0.014). Tuned on scripts/eval_golden.py.
+    let qtok_n = content_tokens(query).len();
+    let (pw_lin, pw_cube): (f64, f64) = if qtok_n <= 1 {
+        (0.05, 0.0)
+    } else {
+        (0.0, 0.015)
+    };
+    // cold_floor scales a low-popularity tool's FTS-RRF contribution down. DISABLED by
+    // default (1.0 = no-op): a penalty <1.0 is data-fragile — Repology popularity is
+    // unreliable for core tools (chmod/tar drop to ~0.15 when their TLDR install JSON is
+    // NULL), so penalizing low-pop name matches demotes the REAL canonical tool (verified:
+    // 0.85 regressed "extract tar.gz" — tar sank below archive-cli). Kept as an env knob
+    // for offline calibration only; never ship < 1.0 without re-clearing the golden gate.
+    let cold_floor = std::env::var("CMDH_COLD_FLOOR")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(1.0);
+    let mut top_apps = Vec::new();
+    if let Some(ref vb) = vec_bytes {
+        let mut app_stmt = conn.prepare(
+            "WITH fts_matched AS ( \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC) as fts_pos \
+                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 300 \
+            ), \
+            fts_ordered AS ( \
+                SELECT arg.app_id, MIN(m.fts_pos) as fts_pos \
+                FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+                GROUP BY arg.app_id \
+            ), \
+            vec_knn AS ( \
+                SELECT cmd_path, distance FROM commands_vec \
+                WHERE embedding MATCH :query_vector AND k = 200 \
+            ), \
+            vec_rank AS ( \
+                SELECT arg.app_id, row_number() OVER (ORDER BY vk.distance ASC) as vec_pos \
+                FROM vec_knn vk JOIN arguments arg ON vk.cmd_path = arg.cmd_path \
+                WHERE arg.node_type = 'root' \
+            ), \
+            pre_scored AS ( \
+                SELECT \
+                    COALESCE(fts.app_id, vec.app_id) as app_id, \
+                    fts.fts_pos as fts_pos, vec.vec_pos as vec_pos \
+                FROM (SELECT app_id FROM fts_ordered UNION SELECT app_id FROM vec_rank) u \
+                LEFT JOIN fts_ordered fts ON u.app_id = fts.app_id \
+                LEFT JOIN vec_rank vec ON u.app_id = vec.app_id \
+            ), \
+            pop_ranked AS ( \
+                SELECT ps.app_id, ps.fts_pos, ps.vec_pos, a.name as nm, \
+                       COALESCE(a.popularity, 0.0) as pop, \
+                       row_number() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
+                FROM pre_scored ps JOIN apps a ON ps.app_id = a.app_id \
+            ), \
+            scored AS ( \
+                SELECT app_id, nm, \
+                       COALESCE((:cold_floor + (1.0 - :cold_floor) * pop) * 1.0 / (60.0 + fts_pos), 0.0) \
+                       + COALESCE(1.0 / (60.0 + vec_pos), 0.0) \
+                       + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
+                FROM pop_ranked \
+            ), \
+            name_deduped AS ( \
+                SELECT app_id, rrf_score, \
+                       row_number() OVER (PARTITION BY nm ORDER BY rrf_score DESC) as rn \
+                FROM scored \
+            ) \
+            SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 5"
+        )?;
+
+        let app_rows = app_stmt.query_map(
+            rusqlite::named_params! {
+                ":query": &cand_query,
+                ":query_vector": vb,
+                ":pw_lin": pw_lin,
+                ":pw_cube": pw_cube,
+                ":cold_floor": cold_floor,
+            },
+            |row| row.get::<_, String>(0),
+        )?;
+
+        for app_id in app_rows.flatten() {
+            top_apps.push(app_id);
+        }
+    } else {
+        let mut app_stmt = conn.prepare(
+            "WITH fts_matched AS ( \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC) as fts_pos \
+                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 300 \
+            ), \
+            fts_ordered AS ( \
+                SELECT arg.app_id, MIN(m.fts_pos) as fts_pos \
+                FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+                GROUP BY arg.app_id \
+            ), \
+            pop_ranked AS ( \
+                SELECT ftso.app_id, ftso.fts_pos, a.name as nm, \
+                       COALESCE(a.popularity, 0.0) as pop, \
+                       row_number() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
+                FROM fts_ordered ftso JOIN apps a ON ftso.app_id = a.app_id \
+            ), \
+            scored AS ( \
+                SELECT app_id, nm, \
+                       COALESCE((:cold_floor + (1.0 - :cold_floor) * pop) * 1.0 / (60.0 + fts_pos), 0.0) \
+                       + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
+                FROM pop_ranked \
+            ), \
+            name_deduped AS ( \
+                SELECT app_id, rrf_score, \
+                       row_number() OVER (PARTITION BY nm ORDER BY rrf_score DESC) as rn \
+                FROM scored \
+            ) \
+            SELECT app_id FROM name_deduped WHERE rn = 1 ORDER BY rrf_score DESC LIMIT 5"
+        )?;
+
+        let app_rows = app_stmt.query_map(
+            rusqlite::named_params! {
+                ":query": &cand_query,
+                ":pw_lin": pw_lin,
+                ":pw_cube": pw_cube,
+                ":cold_floor": cold_floor,
+            },
+            |row| row.get::<_, String>(0),
+        )?;
+
+        for app_id in app_rows.flatten() {
+            top_apps.push(app_id);
+        }
+    }
+
+    if top_apps.is_empty() {
+        return Ok(exact_results);
+    }
+
+    // Guarantee: any app that has an FTS5 text match must appear in top_apps.
+    // The combined RRF can push a weak FTS5 match (e.g. obsidian for "knowledge")
+    // below the top-5 cutoff when vector-boosted github apps dominate.
+    // Fix: collect all FTS5-matching app_ids and inject any that are missing.
+    if processed_query != "*" {
+        let mut fts_only_stmt = conn.prepare(
+            "WITH fts_matched AS ( \
+                SELECT cmd_path FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
+            ) \
+            SELECT DISTINCT arg.app_id \
+            FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+            LIMIT 5",
+        )?;
+        let fts_app_rows = fts_only_stmt
+            .query_map(rusqlite::named_params! { ":query": &cand_query }, |row| {
+                row.get::<_, String>(0)
+            })?;
+        for app_id in fts_app_rows.flatten() {
+            if !top_apps.contains(&app_id) {
+                top_apps.push(app_id);
+            }
+        }
+        top_apps.truncate(8); // cap at 8 to keep Stage 2 bounded
+    }
+
+    // Pad top_apps to length 8 for Stage 2 named params
+    while top_apps.len() < 8 {
+        top_apps.push(top_apps[0].clone());
+    }
+
+    // Popularity prior for the selected apps, reused in the Stage-2 re-rank so the
+    // within-app command ordering also favours canonical tools (data-driven, no prefixes).
+    let mut pop_map: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    {
+        let mut uniq: Vec<&String> = top_apps.iter().collect();
+        uniq.sort();
+        uniq.dedup();
+        let placeholders = uniq.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        if let Ok(mut pstmt) = conn.prepare(&format!(
+            "SELECT app_id, COALESCE(popularity, 0.0) FROM apps WHERE app_id IN ({placeholders})"
+        )) {
+            let params = rusqlite::params_from_iter(uniq.iter().map(|s| s.as_str()));
+            if let Ok(rows) = pstmt.query_map(params, |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+            }) {
+                for kv in rows.flatten() {
+                    pop_map.insert(kv.0, kv.1);
+                }
+            }
+        }
+    }
+
+    // Stage 2: Scoped search.
+    // Over-fetch a candidate pool so the leaf-match re-ranker (below) has room to
+    // promote the command whose name most precisely matches the query intent.
+    let pool = std::cmp::max(limit, 30);
+    let mut results = Vec::new();
+    if let Some(ref vb) = vec_bytes {
+        let mut stmt = conn.prepare(&format!(
+            "WITH fts_rank AS ( \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
+                FROM apps_fts WHERE apps_fts MATCH :query \
+                LIMIT 100 \
+            ), \
+            vec_rank AS ( \
+                SELECT cmd_path, row_number() OVER (ORDER BY distance ASC) as vec_pos \
+                FROM commands_vec \
+                WHERE embedding MATCH :query_vector AND k = 100 \
+            ) \
+            SELECT \
+                arg.app_id, \
+                app.name, \
+                arg.cmd_path, \
+                arg.node_type, \
+                arg.description, \
+                arg.risk_level, \
+                arg.example_template, \
+                app.os_aliases, \
+                app.install_instructions, \
+                app.popularity, \
+                arg.docker_image, \
+                arg.script_url, \
+                arg.source_url, \
+                {prov} \
+            FROM arguments arg \
+            JOIN apps app ON arg.app_id = app.app_id \
+            LEFT JOIN fts_rank fts ON arg.cmd_path = fts.cmd_path \
+            LEFT JOIN vec_rank vec ON arg.cmd_path = vec.cmd_path \
+            WHERE (fts.cmd_path IS NOT NULL OR vec.cmd_path IS NOT NULL) \
+              AND arg.app_id IN (:app1, :app2, :app3, :app4, :app5, :app6, :app7, :app8) \
+            ORDER BY COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) DESC \
+            LIMIT :limit_num"
+        ))?;
+
+        let rows = stmt.query_map(
+            rusqlite::named_params! {
+                ":query": &processed_query,
+                ":query_vector": vb,
+                ":app1": &top_apps[0],
+                ":app2": &top_apps[1],
+                ":app3": &top_apps[2],
+                ":app4": &top_apps[3],
+                ":app5": &top_apps[4],
+                ":app6": &top_apps[5],
+                ":app7": &top_apps[6],
+                ":app8": &top_apps[7],
+                ":limit_num": pool,
+            },
+            |row| {
+                Ok(DbAciRecord {
+                    app_id: row.get(0)?,
+                    name: row.get(1)?,
+                    cmd_path: row.get(2)?,
+                    node_type: row.get(3)?,
+                    description: row.get(4)?,
+                    risk_level: row.get(5)?,
+                    example_template: row.get(6)?,
+                    os_aliases: row.get(7)?,
+                    install_instructions: row.get(8)?,
+                    popularity: row.get(9)?,
+                    docker_image: row.get(10)?,
+                    script_url: row.get(11)?,
+                    source_url: row.get(12)?,
+                    provenance: row.get(13)?,
+                })
+            },
+        )?;
+
+        for r in rows {
+            let record = r?;
+            if let Ok(contract) = AciCommandContract::try_from(record) {
+                results.push(contract);
+            }
+        }
+    } else {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT \
+                arg.app_id, \
+                app.name, \
+                arg.cmd_path, \
+                arg.node_type, \
+                arg.description, \
+                arg.risk_level, \
+                arg.example_template, \
+                app.os_aliases, \
+                app.install_instructions, \
+                app.popularity, \
+                arg.docker_image, \
+                arg.script_url, \
+                arg.source_url, \
+                {prov} \
+            FROM arguments arg \
+            JOIN apps app ON arg.app_id = app.app_id \
+            JOIN apps_fts fts ON arg.cmd_path = fts.cmd_path \
+            WHERE apps_fts MATCH :query \
+              AND arg.app_id IN (:app1, :app2, :app3, :app4, :app5, :app6, :app7, :app8) \
+            ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC \
+            LIMIT :limit_num"
+        ))?;
+
+        let rows = stmt.query_map(
+            rusqlite::named_params! {
+                ":query": &processed_query,
+                ":app1": &top_apps[0],
+                ":app2": &top_apps[1],
+                ":app3": &top_apps[2],
+                ":app4": &top_apps[3],
+                ":app5": &top_apps[4],
+                ":app6": &top_apps[5],
+                ":app7": &top_apps[6],
+                ":app8": &top_apps[7],
+                ":limit_num": pool,
+            },
+            |row| {
+                Ok(DbAciRecord {
+                    app_id: row.get(0)?,
+                    name: row.get(1)?,
+                    cmd_path: row.get(2)?,
+                    node_type: row.get(3)?,
+                    description: row.get(4)?,
+                    risk_level: row.get(5)?,
+                    example_template: row.get(6)?,
+                    os_aliases: row.get(7)?,
+                    install_instructions: row.get(8)?,
+                    popularity: row.get(9)?,
+                    docker_image: row.get(10)?,
+                    script_url: row.get(11)?,
+                    source_url: row.get(12)?,
+                    provenance: row.get(13)?,
+                })
+            },
+        )?;
+
+        for r in rows {
+            let record = r?;
+            if let Ok(contract) = AciCommandContract::try_from(record) {
+                results.push(contract);
+            }
+        }
+    }
+
+    // Path-match re-rank: blend the hybrid-RRF order with how precisely each command's
+    // path (service + leaf, e.g. "ec2 create-vpc") matches the query intent. This lifts
+    // `aws.ec2.create-vpc` above `aws.apigatewayv2.create-vpc-link` for "create a vpc on
+    // aws", and keeps the named service (ec2) in play — without discarding semantic
+    // (vector) ranking, since the RRF position still contributes.
+    let q_tokens = content_tokens(query);
+    // Expanded token set for PATH matching only: intent synonyms + singular forms, so
+    // "clear podman unused images" can match a `podman.image.prune` path (clear→prune,
+    // images→image). Gating decisions below still use the raw token count — they measure
+    // how specific the user's own query is, not the synonym expansion.
+    let q_path_tokens = expand_for_path_match(&q_tokens);
+    if !q_tokens.is_empty() && results.len() > 1 {
+        let n = results.len() as i32;
+        // Path-match disambiguation is decisive for action/resource queries (multiple
+        // tokens, e.g. "create a vpc on aws" → aws.ec2.create-vpc) but harmful for a bare
+        // brand/concept word (e.g. "azure"): there a niche tool with the word literally in
+        // its path (prowler.azure) would bury the canonical CLI (az), whose identity lives
+        // in its popularity/topics, not its command path. So weight path-match strongly only
+        // when the query is specific, and lean on the popularity prior for single tokens.
+        let path_w = if q_tokens.len() >= 2 { 4 } else { 1 };
+        // Popularity bonus mirrors the Stage-1 gating: decisive for a bare brand token,
+        // a gentle nudge for descriptive queries so it can't bury a correct niche tool.
+        let pop_bonus_w = if q_tokens.len() <= 1 { 15.0 } else { 3.0 };
+        let mut scored: Vec<(i32, usize, AciCommandContract)> = results
+            .drain(..)
+            .enumerate()
+            .map(|(i, c)| {
+                let rrf = n - i as i32; // higher = better original rank
+                let pop_bonus =
+                    (pop_bonus_w * pop_map.get(&c.app_id).copied().unwrap_or(0.0)) as i32;
+                // Strong boost for root commands on brand lookups so subcommands don't bury them
+                let root_bonus = if matches!(c.node_type, cmdhub_shared::NodeType::Root)
+                    && q_tokens.len() <= 1
+                {
+                    20
+                } else {
+                    0
+                };
+                // Provenance prior: a probe-verified contract gets a modest boost so it
+                // wins ties and corrects inversions against LLM-inferred fabrications,
+                // without burying a strongly-matching inferred result.
+                let verified_bonus = if c.verified { VERIFIED_BONUS } else { 0 };
+                let composite = rrf
+                    + path_w * path_match_score(&c.cmd_path, &q_path_tokens)
+                    + pop_bonus
+                    + root_bonus
+                    + verified_bonus;
+                (composite, i, c)
+            })
+            .collect();
+        // Sort by composite desc; original position as stable tiebreaker.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        results = scored.into_iter().map(|(_, _, c)| c).collect();
+    }
+
+    let mut final_results = exact_results.clone();
+    final_results.append(&mut results);
+
+    // Deduplicate by cmd_path (same command from multiple sources, e.g. org.archlinux.nb +
+    // org.tldr.nb), AND cap results per app so one tool's subcommands can't flood the list:
+    // a brand/concept query like "azure" must surface the Azure CLI, not 7 of prowler's
+    // "prowler azure ..." checks. Up to PER_APP_CAP keeps "aws ec2 create-vpc/create-subnet"
+    // working while leaving room for other tools.
+    const PER_APP_CAP: usize = 3;
+    let mut seen_paths = std::collections::HashSet::new();
+    let mut per_app: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    final_results.retain(|r| {
+        if !seen_paths.insert(r.cmd_path.clone()) {
+            return false;
+        }
+        let n = per_app.entry(r.app_id.clone()).or_insert(0);
+        *n += 1;
+        *n <= PER_APP_CAP
+    });
+
+    final_results.truncate(limit);
+    for r in &mut final_results {
+        r.confidence = confidence.clone();
+    }
+    Ok(final_results)
+}
+
+/// Provenance prior weight in the composite re-rank: equivalent to jumping a few RRF
+/// ranks. Modest by design — corrects probe-vs-inferred inversions without letting a
+/// weakly-matching verified row bury a strongly-matching inferred one.
+const VERIFIED_BONUS: i32 = 3;
+
+/// Expand query tokens for PATH matching: each token contributes itself, its singular
+/// form (images→image), and its intent synonyms (clear→prune). This lets the path
+/// re-ranker reward `podman.image.prune` for "clear podman unused images" even though
+/// no literal query word appears in the path. FTS recall gets the same widening via
+/// preprocess_query; this applies it to the path-match dimension too.
+fn expand_for_path_match(
+    tokens: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in tokens {
+        out.insert(t.clone());
+        if let Some(stem) = t.strip_suffix('s') {
+            if stem.len() >= 3 {
+                out.insert(stem.to_string());
+            }
+        }
+        for syn in concept_synonyms(t) {
+            out.insert((*syn).to_string());
+        }
+    }
+    out
+}
+
+/// Lowercased content tokens of a query (alphanumerics, stop-words removed).
+fn content_tokens(query: &str) -> std::collections::HashSet<String> {
+    // "show" and "view" are natural-language verbs in intent queries ("show git commit history")
+    // that accidentally match command names (git.show). Treating them as stop words here prevents
+    // path_match from penalising git.log relative to git.show for "show git commit history".
+    let stop: std::collections::HashSet<&str> = [
+        "how", "to", "a", "the", "on", "in", "of", "for", "with", "an", "is", "at", "by", "and",
+        "or", "from", "my", "your", "our", "me", "us", "i", "want", "know", "using", "use", "do",
+        "can", "get", "please", "help", "show", "view",
+    ]
+    .iter()
+    .cloned()
+    .collect();
+    query
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .filter(|w| !stop.contains(w.as_str()))
+        .collect()
+}
+
+/// Score how well a command's path (service + leaf, excluding the binary) matches the
+/// query intent: reward overlap with query tokens, lightly penalise extra path tokens.
+/// e.g. for query {create,vpc,aws}: "aws.ec2.create-vpc" → ec2/create/vpc overlap 2,
+/// extra 1 (ec2) → 5; "aws.apigatewayv2.create-vpc-link" → overlap 2, extra 2 → 4.
+fn path_match_score(cmd_path: &str, q_tokens: &std::collections::HashSet<String>) -> i32 {
+    // Root commands (no subcommand hierarchy) cannot be disambiguated by path matching.
+    // Without this guard, hyphenated roots like "git-standup" would gain +8 for the "git"
+    // token appearing in a git-related query, unfairly burying subcommands like "git.log".
+    if !cmd_path.contains('.') {
+        return 0;
+    }
+    // Drop the first segment (the binary, e.g. "aws") — it's already how we got here.
+    let after_binary = cmd_path.split_once('.').map(|x| x.1).unwrap_or(cmd_path);
+    let tokens: Vec<String> = after_binary
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect();
+    if tokens.is_empty() {
+        return 0;
+    }
+    // A path token matches on its literal form or its singular (images ~ image), so
+    // plural/singular mismatches between query and path don't lose the overlap.
+    let overlap = tokens
+        .iter()
+        .filter(|t| {
+            q_tokens.contains(*t)
+                || t.strip_suffix('s')
+                    .is_some_and(|s| s.len() >= 3 && q_tokens.contains(s))
+        })
+        .count() as i32;
+    let extra = tokens.len() as i32 - overlap;
+    // Use max(0, ...) to avoid negative scores: unmatched path tokens should not
+    // actively penalise otherwise-good commands (e.g. "git.log" for "git commit history").
+    (3 * overlap - extra).max(0)
+}
+
+pub fn search_commands(
+    conn: &Connection,
+    query: &str,
+    query_vector: Option<&[f32]>,
+    limit: usize,
+) -> Result<Vec<AciCommandContract>> {
     let mut has_vector_db = false;
     if query_vector.is_some() {
         if let Ok(count) = conn.query_row::<u64, _, _>(
@@ -177,133 +920,7 @@ pub fn search_commands(
         }
     }
 
-    if has_vector_db {
-        let q_vec = query_vector.unwrap();
-        let mut vec_bytes = Vec::with_capacity(q_vec.len() * 4);
-        for &val in q_vec {
-            vec_bytes.extend_from_slice(&val.to_ne_bytes());
-        }
-        let mut stmt = conn.prepare(
-            "WITH fts_rank AS ( \
-                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC) as fts_pos \
-                FROM apps_fts WHERE apps_fts MATCH :query \
-                LIMIT 100 \
-            ), \
-            vec_rank AS ( \
-                SELECT cmd_path, row_number() OVER (ORDER BY distance ASC) as vec_pos \
-                FROM commands_vec \
-                WHERE embedding MATCH :query_vector AND k = 100 \
-            ) \
-            SELECT \
-                arg.app_id, \
-                app.name, \
-                arg.cmd_path, \
-                arg.node_type, \
-                arg.description, \
-                arg.risk_level, \
-                arg.example_template, \
-                app.install_instructions, \
-                arg.docker_image, \
-                arg.script_url, \
-                arg.source_url \
-            FROM arguments arg \
-            JOIN apps app ON arg.app_id = app.app_id \
-            LEFT JOIN fts_rank fts ON arg.cmd_path = fts.cmd_path \
-            LEFT JOIN vec_rank vec ON arg.cmd_path = vec.cmd_path \
-            WHERE fts.cmd_path IS NOT NULL OR vec.cmd_path IS NOT NULL \
-            ORDER BY COALESCE(1.0 / (60.0 + fts.fts_pos), 0.0) + COALESCE(1.0 / (60.0 + vec.vec_pos), 0.0) DESC \
-            LIMIT :limit_num"
-        )?;
-
-        let rows = stmt.query_map(
-            rusqlite::named_params! {
-                ":query": processed_query,
-                ":query_vector": vec_bytes,
-                ":limit_num": limit,
-            },
-            |row| {
-                Ok(DbAciRecord {
-                    app_id: row.get(0)?,
-                    name: row.get(1)?,
-                    cmd_path: row.get(2)?,
-                    node_type: row.get(3)?,
-                    description: row.get(4)?,
-                    risk_level: row.get(5)?,
-                    example_template: row.get(6)?,
-                    install_instructions: row.get(7)?,
-                    docker_image: row.get(8)?,
-                    script_url: row.get(9)?,
-                    source_url: row.get(10)?,
-                })
-            },
-        )?;
-
-        let mut results = Vec::new();
-        for r in rows {
-            let record = r?;
-            if let Ok(contract) = AciCommandContract::try_from(record) {
-                results.push(contract);
-            }
-        }
-        let mut final_results = exact_results.clone();
-        final_results.append(&mut results);
-        Ok(final_results)
-    } else {
-        // Fallback to pure FTS5 MATCH BM25 search
-        let mut stmt = conn.prepare(
-            "SELECT \
-                arg.app_id, \
-                app.name, \
-                arg.cmd_path, \
-                arg.node_type, \
-                arg.description, \
-                arg.risk_level, \
-                arg.example_template, \
-                app.install_instructions, \
-                arg.docker_image, \
-                arg.script_url, \
-                arg.source_url \
-            FROM arguments arg \
-            JOIN apps app ON arg.app_id = app.app_id \
-            JOIN apps_fts fts ON arg.cmd_path = fts.cmd_path \
-            WHERE apps_fts MATCH :query \
-            ORDER BY bm25(apps_fts, 0.0, 10.0, 1.0) ASC \
-            LIMIT :limit_num",
-        )?;
-
-        let rows = stmt.query_map(
-            rusqlite::named_params! {
-                ":query": processed_query,
-                ":limit_num": limit,
-            },
-            |row| {
-                Ok(DbAciRecord {
-                    app_id: row.get(0)?,
-                    name: row.get(1)?,
-                    cmd_path: row.get(2)?,
-                    node_type: row.get(3)?,
-                    description: row.get(4)?,
-                    risk_level: row.get(5)?,
-                    example_template: row.get(6)?,
-                    install_instructions: row.get(7)?,
-                    docker_image: row.get(8)?,
-                    script_url: row.get(9)?,
-                    source_url: row.get(10)?,
-                })
-            },
-        )?;
-
-        let mut results = Vec::new();
-        for r in rows {
-            let record = r?;
-            if let Ok(contract) = AciCommandContract::try_from(record) {
-                results.push(contract);
-            }
-        }
-        let mut final_results = exact_results.clone();
-        final_results.append(&mut results);
-        Ok(final_results)
-    }
+    search_cascading(conn, query, query_vector, limit, has_vector_db)
 }
 
 pub fn search_all(
@@ -335,6 +952,17 @@ pub fn search_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_calculate_confidence_mapping() {
+        assert_eq!(calculate_confidence(0.70, false), "high");
+        assert_eq!(calculate_confidence(0.75, true), "high");
+        assert_eq!(calculate_confidence(0.78, false), "low");
+        assert_eq!(calculate_confidence(0.82, false), "low");
+        assert_eq!(calculate_confidence(0.85, true), "low");
+        assert_eq!(calculate_confidence(0.83, false), "none");
+        assert_eq!(calculate_confidence(0.90, false), "none");
+    }
 
     #[test]
     fn test_exact_match_priority() {
@@ -453,11 +1081,11 @@ mod tests {
         )
         .unwrap();
 
-        // Insert vector
-        let v = vec![0.1f32; 512];
-        let mut v_bytes = Vec::with_capacity(512 * 4);
+        // Insert vector (float32[384], no zero-padding)
+        let v = vec![0.1f32; 384];
+        let mut v_bytes = Vec::with_capacity(384 * 4);
         for &val in &v {
-            v_bytes.extend_from_slice(&val.to_ne_bytes());
+            v_bytes.extend_from_slice(&val.to_le_bytes());
         }
 
         conn.execute(
@@ -466,10 +1094,113 @@ mod tests {
         )
         .unwrap();
 
-        // Search with query vector
-        let query_vec = vec![0.12f32; 512];
+        // Search with query vector (384-dim)
+        let query_vec = vec![0.12f32; 384];
         let res = search_commands(&conn, "missing_term", Some(&query_vec), 10).unwrap();
         assert!(!res.is_empty());
         assert_eq!(res[0].cmd_path, "knn");
+    }
+
+    #[test]
+    fn test_clear_maps_to_prune_synonyms() {
+        assert!(concept_synonyms("clear").contains(&"prune"));
+        assert!(concept_synonyms("clean").contains(&"prune"));
+        assert!(concept_synonyms("purge").contains(&"prune"));
+        assert!(concept_synonyms("prune").contains(&"unused"));
+        assert!(concept_synonyms("fuzzy").contains(&"fzf"));
+        assert!(concept_synonyms("finder").contains(&"fd"));
+        assert!(concept_synonyms("download").contains(&"curl"));
+        assert!(concept_synonyms("diff").contains(&"delta"));
+        assert!(concept_synonyms("grep").contains(&"ripgrep"));
+    }
+
+    #[test]
+    fn test_tool_alias_synonyms_are_tool_names_only_not_generic_concepts() {
+        // The AND-path widening uses ONLY tool-name aliases (specific binaries) so it
+        // never floods candidates. Generic concept words must NOT appear here (they
+        // regressed "kubernetes pod logs" by surfacing stern/kail) — they stay in
+        // concept_synonyms for the or-fallback path only.
+        assert!(tool_alias_synonyms("fuzzy").contains(&"fzf"));
+        assert!(tool_alias_synonyms("grep").contains(&"rg"));
+        assert!(tool_alias_synonyms("download").contains(&"curl"));
+        // Generic concept tokens expand in concept_synonyms but NOT in the and-path map:
+        assert!(tool_alias_synonyms("kubernetes").is_empty());
+        assert!(tool_alias_synonyms("view").is_empty());
+        assert!(tool_alias_synonyms("clear").is_empty());
+    }
+
+    #[test]
+    fn test_expand_for_path_match_adds_synonyms_and_singulars() {
+        let tokens: std::collections::HashSet<String> =
+            ["clear", "images"].iter().map(|s| s.to_string()).collect();
+        let expanded = expand_for_path_match(&tokens);
+        assert!(expanded.contains("prune")); // clear → prune
+        assert!(expanded.contains("image")); // images → image
+        assert!(expanded.contains("clear")); // originals kept
+    }
+
+    #[test]
+    fn test_old_schema_db_without_provenance_still_works() {
+        // A pre-provenance (schema v1) database must not crash a new client and must
+        // report verified=false for everything.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE apps (app_id TEXT PRIMARY KEY, name TEXT NOT NULL, os_aliases TEXT, \
+             install_instructions TEXT, popularity REAL DEFAULT 0.0); \
+             CREATE TABLE arguments (cmd_path TEXT PRIMARY KEY, app_id TEXT NOT NULL, \
+             node_name TEXT NOT NULL, node_type TEXT NOT NULL, description TEXT NOT NULL, \
+             risk_level TEXT NOT NULL, example_template TEXT, docker_image TEXT, \
+             script_url TEXT, source_url TEXT); \
+             CREATE VIRTUAL TABLE apps_fts USING fts5(cmd_path UNINDEXED, name, capabilities); \
+             INSERT INTO apps (app_id, name) VALUES ('org.test.tar', 'tar'); \
+             INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level) \
+             VALUES ('tar', 'org.test.tar', 'tar', 'root', 'archive files', 'safe'); \
+             INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES ('tar', 'tar', 'archive files');",
+        )
+        .unwrap();
+
+        let res = search_commands(&conn, "tar", None, 5).unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(res[0].cmd_path, "tar");
+        assert!(!res[0].verified); // old DB → unverified by definition
+    }
+
+    #[test]
+    fn test_probe_verified_outranks_inferred_twin() {
+        // Two equal-text commands from different sources; the probe-verified one must
+        // rank first via the provenance prior, and `verified` must surface in output.
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        for (app, prov) in [
+            ("org.inferred.tool", "inferred"),
+            ("org.probed.tool", "probe"),
+        ] {
+            let name = if prov == "probe" { "toolp" } else { "tooli" };
+            conn.execute(
+                "INSERT INTO apps (app_id, name, install_instructions) VALUES (?, ?, '{}')",
+                (app, name),
+            )
+            .unwrap();
+            let path = format!("{}.image.prune", name);
+            conn.execute(
+                "INSERT INTO arguments (cmd_path, app_id, node_name, node_type, description, \
+                 risk_level, provenance) VALUES (?, ?, 'prune', 'sub', \
+                 'Remove unused container images to free disk space', 'dangerous', ?)",
+                (&path, app, prov),
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO apps_fts (cmd_path, name, capabilities) VALUES (?, ?, \
+                 'Remove unused container images to free disk space')",
+                (&path, name),
+            )
+            .unwrap();
+        }
+
+        let res = search_cascading(&conn, "clear unused images", None, 5, false).unwrap();
+        assert!(res.len() >= 2, "expected both twins, got {}", res.len());
+        assert!(res[0].verified, "probe-verified twin must rank first");
+        assert!(res[0].cmd_path.starts_with("toolp"));
+        assert!(!res[1].verified);
     }
 }

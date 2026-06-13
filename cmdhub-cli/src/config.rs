@@ -25,15 +25,18 @@ pub struct Config {
     pub install: InstallConfig,
 }
 
+// Ed25519 public key for verifying the official offline database. The matching private
+// key lives outside the repo (~/.config/cmdhub/keys/ed25519_private.bin) and signs each
+// release's SHA-256(db.zst). Generated 2026-06-11; rotating it requires a client release.
 pub const OFFICIAL_PUBLIC_KEY: [u8; 32] = [
-    25, 127, 107, 35, 225, 108, 133, 50, 198, 171, 200, 56, 250, 205, 94, 167, 137, 190, 12, 118,
-    178, 146, 3, 52, 3, 155, 250, 139, 61, 54, 141, 97,
+    97, 228, 162, 92, 153, 11, 201, 252, 71, 48, 104, 125, 199, 128, 20, 60, 250, 189, 150, 94,
+    170, 212, 223, 133, 120, 182, 137, 88, 220, 130, 171, 194,
 ];
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            api_url: "https://api.cmdhub.io/v1".to_string(),
+            api_url: "https://cdn.cmdhub.org".to_string(),
             public_key: OFFICIAL_PUBLIC_KEY
                 .iter()
                 .map(|b| format!("{:02x}", b))
@@ -119,7 +122,21 @@ pub fn load_or_create_config(custom_path: Option<PathBuf>) -> Result<Config> {
         Ok(default_config)
     } else {
         let toml_str = fs::read_to_string(&config_path).context("Failed to read config file")?;
-        let config: Config = toml::from_str(&toml_str).context("Failed to parse config TOML")?;
+        let mut config: Config =
+            toml::from_str(&toml_str).context("Failed to parse config TOML")?;
+
+        // Cloud-native overrides via Environment Variables
+        if let Ok(api_url) = std::env::var("CMDH_API_URL") {
+            if !api_url.is_empty() {
+                config.api_url = api_url;
+            }
+        }
+        if let Ok(model_url) = std::env::var("CMDH_MODEL_URL") {
+            if !model_url.is_empty() {
+                config.vector.model_url = Some(model_url);
+            }
+        }
+
         Ok(config)
     }
 }
@@ -178,7 +195,7 @@ mod tests {
     #[test]
     fn test_config_parsing_defaults() {
         let toml_str = r#"
-            api_url = "https://api.cmdhub.xyz"
+            api_url = "https://cdn.cmdhub.org"
             public_key = "01020304"
             timeout_seconds = 30
         "#;
