@@ -179,10 +179,14 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
             } else {
                 format!("{} {}", target.path, sub_path.join(" "))
             }),
+            os_aliases: None,
             install_instructions: None,
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
+            verified: true,
+            confidence: "high".to_string(),
         };
 
         // Insert database contract
@@ -430,8 +434,8 @@ fn insert_contract(conn: &rusqlite::Connection, contract: &AciCommandContract) -
     let (app, arg) = contract.to_db_records()?;
 
     conn.execute(
-        "INSERT OR REPLACE INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT OR REPLACE INTO arguments (cmd_path, app_id, node_name, node_type, description, risk_level, example_template, provenance) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'probe')",
         (
             &arg.cmd_path,
             &arg.app_id,
@@ -453,14 +457,9 @@ fn insert_contract(conn: &rusqlite::Connection, contract: &AciCommandContract) -
         (&arg.cmd_path, &app.name, &arg.description),
     )?;
 
-    // Populate mock unit-embeddings (FLOAT[512]) to prevent RRF query execution division-by-zero
-    let mut mock_embedding = vec![0.0f32; 512];
-    mock_embedding[0] = 1.0f32;
-
-    let mut vec_bytes = Vec::with_capacity(512 * 4);
-    for &val in &mock_embedding {
-        vec_bytes.extend_from_slice(&val.to_ne_bytes());
-    }
+    // Populate mock unit-embeddings (int8[384]) to prevent RRF query execution division-by-zero
+    let mut vec_bytes = vec![0i8 as u8; 384];
+    vec_bytes[0] = 127u8; // unit-ish in int8 space
 
     // Safe delete then insert to prevent OR REPLACE virtual table issues in sqlite-vec
     let _ = conn.execute(

@@ -43,12 +43,12 @@ impl EmbeddingModel {
         let output_tensor = results[0].to_array_view::<f32>()?;
         let shape = output_tensor.shape();
 
-        let mut raw_vec = vec![0.0f32; 512];
+        let mut raw_vec = vec![0.0f32; 384];
 
         if shape.len() == 3 {
             let seq_len = shape[1];
             let dim = shape[2];
-            let target_dim = std::cmp::min(dim, 512);
+            let target_dim = std::cmp::min(dim, 384);
 
             let mut valid_token_count = 0.0f32;
             for (t, &m) in mask.iter().enumerate() {
@@ -68,7 +68,7 @@ impl EmbeddingModel {
             }
         } else if shape.len() == 2 {
             let dim = shape[1];
-            let target_dim = std::cmp::min(dim, 512);
+            let target_dim = std::cmp::min(dim, 384);
             for d in 0..target_dim {
                 raw_vec[d] = output_tensor[[0, d]];
             }

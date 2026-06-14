@@ -7,11 +7,13 @@ use serde::Serialize;
 pub struct UsageDto {
     pub cmd_path: String,
     pub example_template: Option<String>,
+    pub confidence: String,
 }
 
 #[derive(Serialize)]
 pub struct MinimalDto {
     pub cmd_path: String,
+    pub confidence: String,
 }
 
 #[derive(Serialize)]
@@ -23,45 +25,105 @@ pub struct FullDto {
     pub description: String,
     pub risk_level: String,
     pub example_template: Option<String>,
+    pub status: String,
     pub install_command: Option<String>,
+    /// True when the contract was parsed from the tool's real --help (provenance =
+    /// probe). Agents should prefer verified contracts; inferred examples may be wrong.
+    pub verified: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+    pub confidence: String,
 }
 
 pub fn resolve_install_command(contract: &AciCommandContract, config: &Config) -> Option<String> {
     let instructions = contract.install_instructions.as_ref()?;
 
     let os = config.install.os.clone().or_else(detect_os);
-    let sys_installer = os.as_ref().map(|o| map_os_to_package_manager(o));
 
-    let mut resolved = None;
-    if let Some(installer) = sys_installer {
-        if let Some(cmd) = instructions.get_command(installer) {
-            resolved = Some((cmd.clone(), is_system_installer(installer)));
+    // Build ordered candidate list:
+    //   1. System package manager for the detected OS
+    //   2. OS-specific AUR helpers (arch: yay, paru)
+    //   3. User-configured package managers from config
+    let mut candidates: Vec<(&str, bool)> = Vec::new();
+
+    if let Some(ref os_str) = os {
+        let sys_pm = map_os_to_package_manager(os_str);
+        candidates.push((sys_pm, is_system_installer(sys_pm)));
+
+        // Arch Linux: fall back to common AUR helpers when pacman doesn't have the package
+        if os_str == "arch" {
+            candidates.push(("yay", false));
+            candidates.push(("paru", false));
         }
     }
 
-    if resolved.is_none() {
-        for pm in &config.install.package_managers {
-            if let Some(cmd) = instructions.get_command(pm) {
-                resolved = Some((cmd.clone(), is_system_installer(pm)));
-                break;
-            }
+    for pm in &config.install.package_managers {
+        candidates.push((pm.as_str(), is_system_installer(pm)));
+    }
+
+    for (pm, is_sys) in candidates {
+        if let Some(raw) = instructions.get_command(pm) {
+            // Normalize: if value is just a package name (no spaces, doesn't include PM keyword)
+            // expand to a full install command (e.g. "restic" → "pacman -S restic")
+            let cmd = normalize_install_cmd(pm, raw);
+            return Some(if is_sys && !is_root_user() {
+                format!("sudo {}", cmd)
+            } else {
+                cmd
+            });
         }
     }
 
-    if let Some((cmd, is_sys)) = resolved {
-        if is_sys && !is_root_user() {
-            Some(format!("sudo {}", cmd))
-        } else {
-            Some(cmd)
+    // Last resort: the tool may only ship via a manager the user didn't configure
+    // (e.g. oci-cli is pip-only). Returning *some* working install command beats null.
+    for pm in FALLBACK_PMS {
+        if let Some(raw) = instructions.get_command(pm) {
+            let cmd = normalize_install_cmd(pm, raw);
+            return Some(if is_system_installer(pm) && !is_root_user() {
+                format!("sudo {}", cmd)
+            } else {
+                cmd
+            });
         }
-    } else {
-        None
+    }
+
+    None
+}
+
+/// Fallback when none of the user's configured/system managers have an entry.
+/// ONLY cross-platform/language managers — never another OS's system manager, so a
+/// Debian user is never told to `yay -S` (Arch-only) an AUR package. If a tool has
+/// no language-PM install for the user's platform, returning None is correct.
+const FALLBACK_PMS: &[&str] = &["cargo", "pip", "pipx", "uv", "npm", "go", "brew"];
+
+fn normalize_install_cmd(pm: &str, raw: &str) -> String {
+    // If the stored value already looks like a full command (contains spaces or PM keyword), use as-is
+    if raw.contains(' ') || raw.starts_with(pm) {
+        return raw.to_string();
+    }
+    // Package name only — expand to canonical install command
+    match pm {
+        "pacman" => format!("pacman -S {}", raw),
+        "apt" => format!("apt install {}", raw),
+        "dnf" => format!("dnf install {}", raw),
+        "apk" => format!("apk add {}", raw),
+        "emerge" => format!("emerge {}", raw),
+        "zypper" => format!("zypper install {}", raw),
+        "yum" => format!("yum install {}", raw),
+        "brew" => format!("brew install {}", raw),
+        "scoop" => format!("scoop install {}", raw),
+        "choco" => format!("choco install {}", raw),
+        "nix-env" | "nix_env" => format!("nix-env -iA nixpkgs.{}", raw),
+        "yay" => format!("yay -S {}", raw),
+        "paru" => format!("paru -S {}", raw),
+        "pip" => format!("pip install {}", raw),
+        "npm" => format!("npm install -g {}", raw),
+        "cargo" => format!("cargo install {}", raw),
+        _ => raw.to_string(),
     }
 }
 
@@ -98,6 +160,53 @@ fn map_os_to_package_manager(os: &str) -> &str {
     }
 }
 
+pub fn resolve_binary_name(contract: &AciCommandContract, config: &Config) -> String {
+    let os = config.install.os.clone().or_else(detect_os);
+    let os_str = os.as_deref().unwrap_or("linux");
+
+    if let Some(ref aliases) = contract.os_aliases {
+        match os_str {
+            "windows" => aliases
+                .windows
+                .clone()
+                .unwrap_or_else(|| contract.name.clone()),
+            "macos" => aliases
+                .macos
+                .clone()
+                .unwrap_or_else(|| contract.name.clone()),
+            _ => {
+                // Linux or other unix-like
+                if let Some(ref linux_aliases) = aliases.linux {
+                    match linux_aliases {
+                        cmdhub_shared::StringOrArray::Single(s) => s.clone(),
+                        cmdhub_shared::StringOrArray::Multiple(arr) => {
+                            if arr.is_empty() {
+                                contract.name.clone()
+                            } else {
+                                for entry in arr {
+                                    if which::which(entry).is_ok() {
+                                        return entry.clone();
+                                    }
+                                }
+                                arr[0].clone()
+                            }
+                        }
+                    }
+                } else {
+                    contract.name.clone()
+                }
+            }
+        }
+    } else {
+        contract.name.clone()
+    }
+}
+
+pub fn check_is_installed(contract: &AciCommandContract, config: &Config) -> bool {
+    let binary_name = resolve_binary_name(contract, config);
+    which::which(&binary_name).is_ok()
+}
+
 pub fn format_results(
     contracts: Vec<AciCommandContract>,
     mode: &str,
@@ -110,6 +219,7 @@ pub fn format_results(
                 .map(|c| UsageDto {
                     cmd_path: c.cmd_path,
                     example_template: c.example_template,
+                    confidence: c.confidence,
                 })
                 .collect();
             serde_json::to_value(&dtos).unwrap()
@@ -119,6 +229,7 @@ pub fn format_results(
                 .into_iter()
                 .map(|c| MinimalDto {
                     cmd_path: c.cmd_path,
+                    confidence: c.confidence,
                 })
                 .collect();
             serde_json::to_value(&dtos).unwrap()
@@ -128,6 +239,12 @@ pub fn format_results(
                 .into_iter()
                 .map(|c| {
                     let install_command = resolve_install_command(&c, config);
+                    let is_installed = check_is_installed(&c, config);
+                    let status = if is_installed {
+                        "installed".to_string()
+                    } else {
+                        "not_installed".to_string()
+                    };
                     FullDto {
                         app_id: c.app_id,
                         name: c.name,
@@ -136,10 +253,13 @@ pub fn format_results(
                         description: c.description,
                         risk_level: format!("{:?}", c.risk_level).to_lowercase(),
                         example_template: c.example_template,
+                        status,
                         install_command,
+                        verified: c.verified,
                         docker_image: c.docker_image,
                         script_url: c.script_url,
                         source_url: c.source_url,
+                        confidence: c.confidence,
                     }
                 })
                 .collect();
@@ -163,17 +283,21 @@ mod tests {
             description: "test".to_string(),
             risk_level: cmdhub_shared::RiskLevel::Safe,
             example_template: None,
+            os_aliases: None,
             install_instructions: Some(InstallInstructions {
                 brew: Some("brew install test".to_string()),
                 apt: Some("apt-get install test".to_string()),
                 pacman: None,
                 cargo: None,
                 scoop: Some("scoop install test".to_string()),
-                others: std::collections::HashMap::new(),
+                ..Default::default()
             }),
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
+            verified: false,
+            confidence: "high".to_string(),
         };
 
         let mut config = Config::default();
@@ -189,5 +313,43 @@ mod tests {
         config.install.os = Some("macos".to_string());
         let cmd_brew = resolve_install_command(&contract, &config).unwrap();
         assert_eq!(cmd_brew, "brew install test");
+    }
+
+    #[test]
+    fn test_resolve_install_command_arch_aur_fallback() {
+        use std::collections::HashMap;
+
+        // Package only has yay/paru, not pacman
+        let mut others = HashMap::new();
+        others.insert("yay".to_string(), "yay -S python-pytube".to_string());
+        others.insert("paru".to_string(), "paru -S python-pytube".to_string());
+
+        let contract = AciCommandContract {
+            app_id: "test".to_string(),
+            name: "python-pytube".to_string(),
+            cmd_path: "pytube".to_string(),
+            node_type: cmdhub_shared::NodeType::Root,
+            description: "test".to_string(),
+            risk_level: cmdhub_shared::RiskLevel::Safe,
+            example_template: None,
+            os_aliases: None,
+            install_instructions: Some(InstallInstructions {
+                others,
+                ..Default::default()
+            }),
+            docker_image: None,
+            script_url: None,
+            source_url: None,
+            popularity: 0.0,
+            verified: false,
+            confidence: "high".to_string(),
+        };
+
+        let mut config = Config::default();
+        config.install.os = Some("arch".to_string());
+
+        // On arch, should fall back to yay when pacman not present
+        let cmd = resolve_install_command(&contract, &config);
+        assert_eq!(cmd, Some("yay -S python-pytube".to_string()));
     }
 }

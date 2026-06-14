@@ -30,7 +30,7 @@ pub enum RiskLevel {
 }
 
 /// Cross-platform installation instructions.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstallInstructions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brew: Option<String>,
@@ -42,6 +42,22 @@ pub struct InstallInstructions {
     pub cargo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scoop: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dnf: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub yum: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emerge: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apk: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zypper: Option<String>,
+    #[serde(rename = "nix-env", skip_serializing_if = "Option::is_none")]
+    pub nix_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub npm: Option<String>,
 
     #[serde(flatten)]
     #[serde(default)]
@@ -56,9 +72,34 @@ impl InstallInstructions {
             "pacman" => self.pacman.as_ref(),
             "cargo" => self.cargo.as_ref(),
             "scoop" => self.scoop.as_ref(),
+            "dnf" => self.dnf.as_ref(),
+            "yum" => self.yum.as_ref(),
+            "emerge" => self.emerge.as_ref(),
+            "apk" => self.apk.as_ref(),
+            "zypper" => self.zypper.as_ref(),
+            "nix-env" | "nix_env" => self.nix_env.as_ref(),
+            "pip" => self.pip.as_ref(),
+            "npm" => self.npm.as_ref(),
             _ => self.others.get(key),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum StringOrArray {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OsAliases {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linux: Option<StringOrArray>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macos: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows: Option<String>,
 }
 
 /// The core ACI command contract returned by CmdHub search.
@@ -82,6 +123,9 @@ pub struct AciCommandContract {
     /// Ready-to-execute template (e.g., "sl -l")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub example_template: Option<String>,
+    /// OS-specific aliases
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_aliases: Option<OsAliases>,
     /// Cross-platform install commands
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_instructions: Option<InstallInstructions>,
@@ -94,6 +138,21 @@ pub struct AciCommandContract {
     /// URL of the open-source code repository
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+    /// Popularity score (0.0 to 1.0) derived from distro package counts
+    #[serde(default)]
+    pub popularity: f64,
+    /// True when this contract was parsed from the tool's real `--help` output
+    /// (provenance = 'probe'); false for crawl+LLM-inferred contracts. Agents
+    /// should prefer verified contracts and treat inferred examples with caution.
+    #[serde(default)]
+    pub verified: bool,
+    /// Search confidence rating: "high", "low", or "none"
+    #[serde(default = "default_confidence")]
+    pub confidence: String,
+}
+
+fn default_confidence() -> String {
+    "high".to_string()
 }
 
 /// Metadata about the local offline database.
@@ -145,14 +204,18 @@ pub struct IncrementalSyncPayload {
     pub apps: Vec<DbApp>,
     pub arguments: Vec<DbArgument>,
     pub command_vecs: Vec<DbCommandVec>,
+    #[serde(default)]
+    pub deleted_apps: Vec<String>,
 }
 
 /// Database record representing the `apps` table row.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DbApp {
     pub app_id: String,
     pub name: String,
+    pub os_aliases: Option<String>,
     pub install_instructions: Option<String>,
+    pub popularity: f64,
 }
 
 /// Database record representing the `arguments` table row.
@@ -174,7 +237,7 @@ pub struct DbArgument {
 ///
 /// This provides the exact structure returned by combining a specific
 /// CLI command/argument with its parent app metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DbAciRecord {
     pub app_id: String,
     pub name: String,
@@ -183,10 +246,15 @@ pub struct DbAciRecord {
     pub description: String,
     pub risk_level: String,
     pub example_template: Option<String>,
+    pub os_aliases: Option<String>,
     pub install_instructions: Option<String>,
+    pub popularity: f64,
     pub docker_image: Option<String>,
     pub script_url: Option<String>,
     pub source_url: Option<String>,
+    /// 'probe' (parsed from real --help) or 'inferred' (crawl+LLM). None when the
+    /// local DB predates the provenance column — treated as 'inferred' (unverified).
+    pub provenance: Option<String>,
 }
 
 impl AciCommandContract {
@@ -203,10 +271,18 @@ impl AciCommandContract {
             None
         };
 
+        let os_aliases = if let Some(ref aliases) = self.os_aliases {
+            Some(serde_json::to_string(aliases)?)
+        } else {
+            None
+        };
+
         let app = DbApp {
             app_id: self.app_id.clone(),
             name: self.name.clone(),
+            os_aliases,
             install_instructions,
+            popularity: self.popularity,
         };
 
         let node_type_str = match self.node_type {
@@ -281,6 +357,21 @@ impl TryFrom<DbAciRecord> for AciCommandContract {
             None
         };
 
+        let os_aliases = if let Some(ref alias_str) = record.os_aliases {
+            if alias_str.trim().is_empty() {
+                None
+            } else {
+                Some(serde_json::from_str(alias_str).map_err(|e| {
+                    crate::error::CmdHubError::Validation(format!(
+                        "Failed to parse os_aliases JSON: {}",
+                        e
+                    ))
+                })?)
+            }
+        } else {
+            None
+        };
+
         Ok(AciCommandContract {
             app_id: record.app_id,
             name: record.name,
@@ -289,10 +380,14 @@ impl TryFrom<DbAciRecord> for AciCommandContract {
             description: record.description,
             risk_level,
             example_template: record.example_template,
+            os_aliases,
             install_instructions,
             docker_image: record.docker_image,
             script_url: record.script_url,
             source_url: record.source_url,
+            popularity: record.popularity,
+            verified: record.provenance.as_deref() == Some("probe"),
+            confidence: "high".to_string(),
         })
     }
 }
@@ -302,7 +397,9 @@ pub const CREATE_APPS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS apps (
     app_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    install_instructions TEXT
+    os_aliases TEXT,
+    install_instructions TEXT,
+    popularity REAL DEFAULT 0.0
 );
 "#;
 
@@ -319,6 +416,7 @@ CREATE TABLE IF NOT EXISTS arguments (
     docker_image TEXT,
     script_url TEXT,
     source_url TEXT,
+    provenance TEXT NOT NULL DEFAULT 'inferred',
     FOREIGN KEY(app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 "#;
@@ -336,7 +434,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
 pub const CREATE_COMMANDS_VEC_TABLE: &str = r#"
 CREATE VIRTUAL TABLE IF NOT EXISTS commands_vec USING vec0(
     cmd_path TEXT PRIMARY KEY,
-    embedding float[512]
+    embedding float[384]
 );
 "#;
 
@@ -376,10 +474,21 @@ mod tests {
             description: "Display a train moving from left to right".to_string(),
             risk_level: RiskLevel::Safe,
             example_template: Some("sl -l".to_string()),
+            os_aliases: Some(OsAliases {
+                linux: Some(StringOrArray::Multiple(vec![
+                    "sl-prompt".to_string(),
+                    "sl".to_string(),
+                ])),
+                macos: Some("sl".to_string()),
+                windows: None,
+            }),
             install_instructions: None,
             docker_image: None,
             script_url: None,
             source_url: None,
+            popularity: 0.0,
+            verified: false,
+            confidence: "high".to_string(),
         };
 
         let json = serde_json::to_string(&contract).unwrap();
@@ -387,6 +496,7 @@ mod tests {
         assert_eq!(contract.app_id, deserialized.app_id);
         assert_eq!(contract.cmd_path, deserialized.cmd_path);
         assert_eq!(contract.risk_level, deserialized.risk_level);
+        assert_eq!(contract.os_aliases, deserialized.os_aliases);
     }
 
     #[test]
@@ -408,6 +518,7 @@ mod tests {
             description: "Display a train moving from left to right".to_string(),
             risk_level: RiskLevel::Safe,
             example_template: Some("sl -l".to_string()),
+            os_aliases: None,
             install_instructions: Some(InstallInstructions {
                 brew: Some("brew install sl".to_string()),
                 apt: Some("sudo apt install sl".to_string()),
@@ -421,6 +532,9 @@ mod tests {
                 "https://raw.githubusercontent.com/mtoyoda/sl/master/install.sh".to_string(),
             ),
             source_url: Some("https://github.com/mtoyoda/sl".to_string()),
+            popularity: 0.8,
+            verified: false,
+            confidence: "high".to_string(),
         };
 
         // Test node_name extraction
@@ -464,10 +578,13 @@ mod tests {
             description: db_arg.description,
             risk_level: db_arg.risk_level,
             example_template: db_arg.example_template,
+            os_aliases: db_app.os_aliases,
             install_instructions: db_app.install_instructions,
+            popularity: db_app.popularity,
             docker_image: db_arg.docker_image,
             script_url: db_arg.script_url,
             source_url: db_arg.source_url,
+            provenance: Some("probe".to_string()),
         };
 
         let reconstructed = AciCommandContract::try_from(db_record).unwrap();

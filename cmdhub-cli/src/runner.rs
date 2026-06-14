@@ -6,7 +6,8 @@ use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
 pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciCommandContract> {
-    let mut stmt = conn.prepare(
+    let prov = crate::db::provenance_expr(conn);
+    let mut stmt = conn.prepare(&format!(
         "SELECT \
             arg.app_id, \
             app.name, \
@@ -15,14 +16,17 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
             arg.description, \
             arg.risk_level, \
             arg.example_template, \
+            app.os_aliases, \
             app.install_instructions, \
+            app.popularity, \
             arg.docker_image, \
             arg.script_url, \
-            arg.source_url \
+            arg.source_url, \
+            {prov} \
         FROM arguments arg \
         JOIN apps app ON arg.app_id = app.app_id \
-        WHERE arg.cmd_path = ?1",
-    )?;
+        WHERE arg.cmd_path = ?1"
+    ))?;
 
     let record = stmt
         .query_row([cmd_path], |row| {
@@ -34,10 +38,13 @@ pub fn get_command_by_path(conn: &Connection, cmd_path: &str) -> Result<AciComma
                 description: row.get(4)?,
                 risk_level: row.get(5)?,
                 example_template: row.get(6)?,
-                install_instructions: row.get(7)?,
-                docker_image: row.get(8)?,
-                script_url: row.get(9)?,
-                source_url: row.get(10)?,
+                os_aliases: row.get(7)?,
+                install_instructions: row.get(8)?,
+                popularity: row.get(9)?,
+                docker_image: row.get(10)?,
+                script_url: row.get(11)?,
+                source_url: row.get(12)?,
+                provenance: row.get(13)?,
             })
         })
         .context("Command path not found in database")?;
@@ -99,10 +106,21 @@ pub fn run_command(
     }
 
     // Prepare executable
-    let executable = &contract.name;
+    let executable = crate::dto::resolve_binary_name(&contract, config);
+
+    // Check if installed
+    if !crate::dto::check_is_installed(&contract, config) {
+        eprintln!(
+            "Warning: command '{}' is not installed locally.",
+            executable
+        );
+        if let Some(install_cmd) = crate::dto::resolve_install_command(&contract, config) {
+            eprintln!("To install, run: {}", install_cmd);
+        }
+    }
 
     // Spawn the subprocess
-    let mut child = Command::new(executable)
+    let mut child = Command::new(&executable)
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

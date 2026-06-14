@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-15
+
+### Fixed
+- **Semantic search now works on fresh installs.** The default model SHA-256 was a placeholder that never matched the published `bge-micro-v2.onnx`, so verification failed and search silently fell back to FTS-only. ([#14])
+- **Correct CDN domain.** The previously published v0.1.0 binary pointed at a retired `cdn.cmdhub.xyz`; builds now use `cdn.cmdhub.org`.
+
+### Added
+- **Embedded starter database** — a compact, offline top-~1500-command registry (with vectors) is bundled in the binary, so `cmdh search` returns results immediately on a fresh install with no network and no prior `cmdh update`. Run `cmdh update` to overlay the full 100k+ catalog from the CDN.
+- `CMDH_NO_STARTER` env var to skip starter hydration (testing/CI).
+
+### Changed
+- The embedded starter is only used when the local DB is missing or empty; a corrupt DB is left for the existing recovery path (`cmdh update --force`).
+
 ## [0.1.0-alpha.5] - 2026-06-04
 
 ### Added

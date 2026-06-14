@@ -9,8 +9,13 @@ use sha2::{Digest, Sha256};
 use std::fs;
 
 pub async fn update_database(config: &Config, force: bool) -> Result<()> {
+    // Use connect + read (stall) timeouts rather than one total timeout: the database
+    // payload is hundreds of MB, so a total timeout aborts a healthy but slow download.
+    // A read timeout still aborts a genuinely stalled connection.
+    let to = std::time::Duration::from_secs(config.timeout_seconds);
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(config.timeout_seconds))
+        .connect_timeout(to)
+        .read_timeout(to)
         .build()?;
 
     let mut last_sync_time = 0i64;
@@ -112,9 +117,14 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect::<String>();
-    if !force && computed_hex != manifest.sha256 {
+    // Always validate integrity, even with --force. --force is about bypassing the
+    // last_sync_time noop check (re-download an already-current version), NOT about
+    // skipping integrity: a stale CDN edge cache can serve an old .zst whose sha256 no
+    // longer matches the fresh manifest, and skipping this check used to surface that as
+    // a confusing "Ed25519 verification failed" instead of a clear SHA-256 mismatch.
+    if computed_hex != manifest.sha256 {
         return Err(anyhow::anyhow!(CmdHubError::Validation(format!(
-            "SHA-256 mismatch: computed {}, manifest {}",
+            "SHA-256 mismatch: computed {}, manifest {} (stale CDN cache? try again or purge)",
             computed_hex, manifest.sha256
         ))));
     }
@@ -181,6 +191,7 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
 
         let mut conn = rusqlite::Connection::open(&live_db_path)
             .context("Failed to open live database for incremental update")?;
+        let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
 
         unsafe {
             type SqliteVecInitFn = unsafe extern "C" fn();
@@ -195,7 +206,42 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
 
         crate::db::init_db(&tx)?;
 
+        // Helper helper to delete commands and associated index entries for a given app_id
+        let delete_app_commands = |tx_ref: &rusqlite::Transaction,
+                                   target_app_id: &str|
+         -> Result<()> {
+            let mut stmt = tx_ref.prepare("SELECT cmd_path FROM arguments WHERE app_id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![target_app_id])?;
+            while let Some(row) = rows.next()? {
+                let cmd_path: String = row.get(0)?;
+                let _ = tx_ref.execute(
+                    "DELETE FROM apps_fts WHERE cmd_path = ?1",
+                    rusqlite::params![cmd_path],
+                );
+                let _ = tx_ref.execute(
+                    "DELETE FROM commands_vec WHERE cmd_path = ?1",
+                    rusqlite::params![cmd_path],
+                );
+            }
+            tx_ref.execute(
+                "DELETE FROM arguments WHERE app_id = ?1",
+                rusqlite::params![target_app_id],
+            )?;
+            Ok(())
+        };
+
+        // 1. Process deleted/archived apps
+        for app_id in payload.deleted_apps {
+            delete_app_commands(&tx, &app_id)?;
+            tx.execute(
+                "DELETE FROM apps WHERE app_id = ?1",
+                rusqlite::params![app_id],
+            )?;
+        }
+
+        // 2. Process updated/inserted apps
         for app in payload.apps {
+            delete_app_commands(&tx, &app.app_id)?;
             tx.execute(
                 "INSERT OR REPLACE INTO apps (app_id, name, install_instructions) VALUES (?1, ?2, ?3)",
                 rusqlite::params![app.app_id, app.name, app.install_instructions],
@@ -240,11 +286,21 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
         }
 
         for vec in payload.command_vecs {
-            if vec.embedding.len() == 512 {
-                let mut vec_bytes = Vec::with_capacity(512 * 4);
-                for &val in &vec.embedding {
-                    vec_bytes.extend_from_slice(&val.to_ne_bytes());
-                }
+            // Support both int8_384 (new) and float32_512 (legacy) embedding formats.
+            let is_int8 = vec.embedding.len() == 384;
+            if is_int8 || vec.embedding.len() == 512 {
+                let vec_bytes: Vec<u8> = if is_int8 {
+                    vec.embedding
+                        .iter()
+                        .map(|&v| (v * 127.0).round().clamp(-128.0, 127.0) as i8 as u8)
+                        .collect()
+                } else {
+                    let mut b = Vec::with_capacity(512 * 4);
+                    for &val in &vec.embedding {
+                        b.extend_from_slice(&val.to_ne_bytes());
+                    }
+                    b
+                };
                 let _ = tx.execute(
                     "DELETE FROM commands_vec WHERE cmd_path = ?1",
                     rusqlite::params![vec.cmd_path],
@@ -304,6 +360,7 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
 
         let _ = dst_conn.execute("PRAGMA journal_mode = WAL;", []);
         let _ = dst_conn.execute("PRAGMA synchronous = NORMAL;", []);
+        let _ = dst_conn.execute("PRAGMA foreign_keys = ON;", []);
 
         let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)
             .context("Failed to initialize SQLite backup")?;

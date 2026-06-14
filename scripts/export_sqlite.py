@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Export an existing cmdhub.db (apps + arguments) to the JSON format build_db.py consumes.
+
+This lets us treat the local SQLite as the master dataset: mutate it (deep CLI
+imports, install fixes, description cleanup), export, then rebuild a fresh DB with
+real BGE-micro-v2 embeddings + FTS via build_db.py.
+
+Usage:
+    python3 export_sqlite.py --db ~/.local/share/cmdhub/cmdhub.db --out /tmp/cmdhub_export.json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sqlite3
+from pathlib import Path
+
+
+def export(db_path: Path, out_path: Path) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    has_pop = any(c[1] == "popularity" for c in conn.execute("PRAGMA table_info(apps)"))
+    pop_sel = "popularity" if has_pop else "0.0 AS popularity"
+    apps = [
+        {
+            "app_id": r["app_id"],
+            "name": r["name"],
+            "os_aliases": r["os_aliases"],
+            "install_instructions": r["install_instructions"],
+            "popularity": r["popularity"],
+        }
+        for r in conn.execute(
+            f"SELECT app_id, name, os_aliases, install_instructions, {pop_sel} FROM apps")
+    ]
+
+    arg_cols = {c[1] for c in conn.execute("PRAGMA table_info(arguments)")}
+    topics_sel = "topics" if "topics" in arg_cols else "NULL AS topics"
+    # provenance: 'probe' (parsed from real --help) vs 'inferred' (crawl+LLM). Old DBs
+    # without the column default to 'inferred' (unverified until proven) — backward-safe.
+    prov_sel = "provenance" if "provenance" in arg_cols else "'inferred' AS provenance"
+    arguments = [
+        {
+            "cmd_path": r["cmd_path"],
+            "app_id": r["app_id"],
+            "node_name": r["node_name"],
+            "node_type": r["node_type"],
+            "description": r["description"],
+            "risk_level": r["risk_level"],
+            "example_template": r["example_template"],
+            "docker_image": r["docker_image"],
+            "script_url": r["script_url"],
+            "source_url": r["source_url"],
+            "topics": r["topics"],
+            "provenance": r["provenance"],
+        }
+        for r in conn.execute(
+            "SELECT cmd_path, app_id, node_name, node_type, description, risk_level, "
+            f"example_template, docker_image, script_url, source_url, {topics_sel}, {prov_sel} FROM arguments"
+        )
+    ]
+    conn.close()
+
+    out_path.write_text(json.dumps({"apps": apps, "arguments": arguments}, ensure_ascii=False))
+    print(f"Exported {len(apps)} apps, {len(arguments)} arguments → {out_path}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default=str(Path.home() / ".local/share/cmdhub/cmdhub.db"), type=Path)
+    ap.add_argument("--out", default="/tmp/cmdhub_export.json", type=Path)
+    args = ap.parse_args()
+    export(args.db, args.out)
+
+
+if __name__ == "__main__":
+    main()

@@ -46,6 +46,19 @@ cmdh search "extract tar excluding node_modules"
 cmdh mcp --transport stdio
 ```
 
+## Use as an AI Agent Skill
+
+CmdHub ships an [Agent Skill](./cmdhub-skills/SKILL.md) that teaches AI agents (Claude
+Code, etc.) when and how to use `cmdh` for offline command discovery. Install it with the
+[`skills`](https://github.com/obra/skills) CLI:
+
+```bash
+npx skills add https://github.com/Xuepoo/cmdhub-oss/tree/main/cmdhub-skills
+```
+
+The skill covers search tips, OS-aware install resolution, risk handling, and the
+`cmdhub_search` / `cmdhub_execute` MCP tools.
+
 ## Documentation
 
 Full architecture, API, and design specifications are in the [cmdhub-docs](https://github.com/Xuepoo/cmdhub/tree/main/cmdhub-docs) directory.
