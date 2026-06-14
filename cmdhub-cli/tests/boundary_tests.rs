@@ -6,6 +6,7 @@ fn test_boundary_empty_query() {
     let tmp = TempDir::new().unwrap();
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
     cmd.env("XDG_DATA_HOME", tmp.path())
+        .env("CMDH_NO_STARTER", "1")
         .env("XDG_CONFIG_HOME", tmp.path())
         .arg("search")
         .arg("");
@@ -21,6 +22,7 @@ fn test_boundary_ultra_long_query() {
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
     let ultra_long = "a".repeat(1500);
     cmd.env("XDG_DATA_HOME", tmp.path())
+        .env("CMDH_NO_STARTER", "1")
         .env("XDG_CONFIG_HOME", tmp.path())
         .arg("search")
         .arg(ultra_long);
@@ -44,6 +46,7 @@ fn test_boundary_quotes_semicolons_emoji() {
     for query in edge_cases {
         let mut cmd = Command::cargo_bin("cmdh").unwrap();
         cmd.env("XDG_DATA_HOME", tmp.path())
+        .env("CMDH_NO_STARTER", "1")
             .env("XDG_CONFIG_HOME", tmp.path())
             .arg("search")
             .arg(query);
@@ -59,6 +62,7 @@ fn test_boundary_limit_zero() {
     let tmp = TempDir::new().unwrap();
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
     cmd.env("XDG_DATA_HOME", tmp.path())
+        .env("CMDH_NO_STARTER", "1")
         .env("XDG_CONFIG_HOME", tmp.path())
         .arg("search")
         .arg("test")
@@ -75,6 +79,7 @@ fn test_boundary_limit_large() {
     let tmp = TempDir::new().unwrap();
     let mut cmd = Command::cargo_bin("cmdh").unwrap();
     cmd.env("XDG_DATA_HOME", tmp.path())
+        .env("CMDH_NO_STARTER", "1")
         .env("XDG_CONFIG_HOME", tmp.path())
         .arg("search")
         .arg("test")

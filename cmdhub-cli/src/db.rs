@@ -17,17 +17,20 @@ pub fn resolve_db_path() -> PathBuf {
 /// `cmdh-build-db` over a top-N subset; compressed with zstd.
 static EMBEDDED_STARTER_DB_ZST: &[u8] = include_bytes!("../assets/starter.db.zst");
 
-/// True if the DB at `path` has no apps (a fresh, schema-only file or missing).
+/// Whether the DB at `path` should be seeded from the embedded starter: true only
+/// for a missing file or a valid-but-empty (schema-only) DB. A file that exists but
+/// is unreadable/corrupt returns false — we must NOT mask corruption by overwriting
+/// it; that case is handled by the open/init recovery path (`update --force`).
 fn db_is_empty(path: &std::path::Path) -> bool {
     if !path.exists() {
         return true;
     }
     match Connection::open(path) {
-        Ok(c) => c
-            .query_row("SELECT count(*) FROM apps", [], |r| r.get::<_, i64>(0))
-            .map(|n| n == 0)
-            .unwrap_or(true),
-        Err(_) => true,
+        Ok(c) => match c.query_row("SELECT count(*) FROM apps", [], |r| r.get::<_, i64>(0)) {
+            Ok(n) => n == 0,      // valid schema, no rows → seed
+            Err(_) => false,      // corrupt / unexpected schema → don't overwrite
+        },
+        Err(_) => false,          // can't even open → leave it for recovery
     }
 }
 
@@ -35,6 +38,11 @@ fn db_is_empty(path: &std::path::Path) -> bool {
 /// the embedded starter DB so the very first `cmdh search` returns results offline.
 /// Never overwrites a populated DB (e.g. after `cmdh update`). Call before open_db.
 pub fn hydrate_starter_if_empty() -> Result<()> {
+    // Escape hatch for tests/CI that intentionally want an empty DB (boundary
+    // input tests, OOD gating) without the embedded starter masking results.
+    if std::env::var_os("CMDH_NO_STARTER").is_some() {
+        return Ok(());
+    }
     let db_path = resolve_db_path();
     if !db_is_empty(&db_path) {
         return Ok(());
