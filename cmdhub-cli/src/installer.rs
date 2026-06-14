@@ -120,7 +120,7 @@ pub async fn ensure_model_installed(config: &Config) -> Result<PathBuf> {
         .vector
         .model_sha256
         .as_deref()
-        .unwrap_or("d3b07384d113edec49eaa6238ad5ff00b192e2ad47a8a6cf23bdc1048b292e2a");
+        .unwrap_or("9f705befe60d00ca3d8d14c9dd61a3ecfca9f1920a39fbc4a5b056c0ccd977d4");
 
     if hash_str != target_hash {
         let _ = std::fs::remove_file(&staging_path);
@@ -172,7 +172,7 @@ pub async fn install_vector(
             .vector
             .model_sha256
             .as_deref()
-            .unwrap_or("d3b07384d113edec49eaa6238ad5ff00b192e2ad47a8a6cf23bdc1048b292e2a");
+            .unwrap_or("9f705befe60d00ca3d8d14c9dd61a3ecfca9f1920a39fbc4a5b056c0ccd977d4");
         if hash_str != target_hash {
             std::fs::remove_file(&model_path)?;
             anyhow::bail!(
