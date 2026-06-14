@@ -169,6 +169,15 @@ package_managers = ["uv", "npm", "cargo", "go"]
     let conn = {
         let is_force_update = matches!(cli.command, Commands::Update { force: true });
 
+        // Fresh install (no DB yet, or empty schema-only DB) → seed from the embedded
+        // starter set so the first search works offline. Skipped on `update --force`
+        // (which intentionally rebuilds) and never overwrites a populated DB.
+        if !is_force_update {
+            if let Err(e) = db::hydrate_starter_if_empty() {
+                eprintln!("Warning: could not seed starter database ({e}).");
+            }
+        }
+
         let try_open_init = || -> Result<rusqlite::Connection> {
             let c = db::open_db()?;
             db::init_db(&c)?;
