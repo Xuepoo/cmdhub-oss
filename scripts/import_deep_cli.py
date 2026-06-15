@@ -190,10 +190,20 @@ def _inherited_install(conn: sqlite3.Connection, tool: str) -> str | None:
     return row[0] if row else None
 
 
-def import_deep(probe_dir: Path, db_path: Path) -> None:
+def import_deep(probe_dir: Path, db_path: Path, provenance: str = "probe") -> None:
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+
+    # This importer ingests real `--help` probe output, so its rows are ground
+    # truth: tag them provenance='probe' (the single trust signal consumed by
+    # build_db dedup, search `verified`, and cloud Explore). Older master DBs may
+    # predate the column — add it, defaulting pre-existing rows to 'inferred'.
+    arg_cols = {row[1] for row in conn.execute("PRAGMA table_info(arguments)")}
+    if "provenance" not in arg_cols:
+        conn.execute(
+            "ALTER TABLE arguments ADD COLUMN provenance TEXT NOT NULL DEFAULT 'inferred'"
+        )
 
     files = sorted(probe_dir.glob("cli_*.json"))
     if not files:
@@ -252,9 +262,9 @@ def import_deep(probe_dir: Path, db_path: Path) -> None:
             desc = _extract_description(text) or f"{' '.join(path)} command"
             conn.execute(
                 "INSERT OR REPLACE INTO arguments "
-                "(app_id, cmd_path, node_name, node_type, description, risk_level) "
-                "VALUES (?, ?, ?, ?, ?, 'safe')",
-                (app_id, cmd_path, node_name, node_type, desc),
+                "(app_id, cmd_path, node_name, node_type, description, risk_level, provenance) "
+                "VALUES (?, ?, ?, ?, ?, 'safe', ?)",
+                (app_id, cmd_path, node_name, node_type, desc, provenance),
             )
             n_ins += 1
 
@@ -272,11 +282,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe-dir", required=True, type=Path)
     ap.add_argument("--db", default=str(Path.home() / ".local/share/cmdhub/cmdhub.db"), type=Path)
+    ap.add_argument("--provenance", default="probe",
+                    help="provenance tag for imported rows (probe output is ground truth)")
     args = ap.parse_args()
     if not args.probe_dir.exists():
         print(f"[error] probe-dir not found: {args.probe_dir}")
         return
-    import_deep(args.probe_dir, args.db)
+    import_deep(args.probe_dir, args.db, args.provenance)
 
 
 if __name__ == "__main__":
