@@ -143,3 +143,37 @@ published db sha16, verified-coverage %):
 Manual-trigger weekly to start. First batch = feedback ∪ top-50. Each subsequent
 batch drains new feedback + advances the popularity tier (the selector already
 skips apps that have probe rows, so the top-N window naturally moves forward).
+
+---
+
+## Batch log
+
+```
+2026-06-16 | batch 1 | +29 probe (0→29)   | golden 96%  MRR 0.716 | sha c33fdd5216d33de2 | glyrc/rg/fd/jq/git
+2026-06-16 | batch 2 | +483 probe (29→512) | golden 100% MRR 0.761 | sha b9d6980dae2ebcc4 | podman(256)/docker(219)+shellcheck/yt-dlp/micro/wl-copy/wl-paste/pdftotext/rtmpdump/du; consolidated podman 9→1 app + docker; deleted fabricated podman-images
+```
+
+Notes carried forward:
+- **build_db bottleneck is the sqlite-vec write + zstd-19 compress (~28min on the
+  150k corpus), NOT embedding** — do not wrap it in a short `timeout`; run it
+  backgrounded and wait on the pid. Use `--device cuda` (single-process GPU path)
+  to skip the multiprocess CPU pool.
+- **Local `cmdh update` verification needs an isolated `XDG_CONFIG_HOME`** — the
+  dev `~/.config/cmdhub/config.toml` pins a dev `public_key` (197f6b23…) that does
+  NOT match the production signing key, so it fails signature verify. Real users
+  have no such config and use the embedded `OFFICIAL_PUBLIC_KEY` (61e4a25c…), which
+  the prod private key matches. Verify with
+  `XDG_CONFIG_HOME=/tmp/x XDG_DATA_HOME=/tmp/y CMDH_API_URL=https://cdn.cmdhub.org cmdh update`.
+- **Consolidation leaves empty fragment apps** (`import_deep_cli` deletes a tool's
+  `arguments` and re-anchors under one app_id, but same-name fragment app rows with
+  a *different* name survive empty). `seed_explore.py` now skips 0-command apps and
+  reaps seed-owned orphans, so Explore stays clean. The offline DB still carries the
+  empties (harmless — CLI search is on `arguments`).
+- **Hyphenated fabrications** (`podman-images`, `podman-image`, …) are separate
+  app_ids the dotted-path consolidation does NOT catch. They need a dedicated
+  fabrication sweep (BACKLOG #13 follow-up b) — and care: `docker-compose` v1,
+  `docker-machine`, `podman-compose`, `podman-tui` are REAL tools, not fakes.
+- **Prod writes are permission-gated.** The Step-1 feedback read and the Step-7
+  destructive re-seed (orphan-reaping DELETEs) can trip the auto-mode classifier;
+  stage the artifact + presigned URL, then run the apply via an operator-invoked
+  script (`! bash …`).
