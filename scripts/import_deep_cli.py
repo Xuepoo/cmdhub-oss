@@ -120,6 +120,19 @@ def _extract_man_description(text: str, max_chars: int = 300) -> str:
     return ""
 
 
+# A usage-synopsis line is NOT a description: it starts with usage:/or:, or it is
+# the wrapped synopsis under a bare "Usage:" header (util-linux style:
+#   Usage:\n  look [options] <string> [<file>...]\n\n  Display lines ...).
+# Detected by option/arg-placeholder brackets that prose descriptions don't carry.
+_SYNOPSIS_RE = re.compile(r"\[opt|\bor:\s|<[a-z0-9_.-]+>|\|", re.IGNORECASE)
+
+
+def _is_synopsis(s: str, low: str) -> bool:
+    if low.startswith(("usage:", "or:")):
+        return True
+    return bool(_SYNOPSIS_RE.search(s))
+
+
 def _extract_description(text: str, max_chars: int = 300) -> str:
     """Description for man / cobra / click / argparse help."""
     man = _extract_man_description(text, max_chars)
@@ -142,6 +155,10 @@ def _extract_description(text: str, max_chars: int = 300) -> str:
                 break
             continue
         if _NOISE_LINE_RE.match(s):
+            continue
+        # Skip wrapped usage-synopsis lines (look's "look [options] <string>",
+        # chmod's "or:  chmod [OPTION]...") so the real prose description wins.
+        if not buf and _is_synopsis(s, low):
             continue
         buf.append(s)
         if len(" ".join(buf)) >= max_chars:
