@@ -223,6 +223,10 @@ def generate_queries(commands: list[Command], cache_path: str, per_tool: int,
             for c in commands}
 
 
+def passes_count(verdicts: list[Verdict]) -> int:
+    return sum(1 for v in verdicts if v.status == "pass")
+
+
 def render_report(verdicts: list[Verdict], total_queries: int) -> tuple[str, list[dict]]:
     passes = sum(1 for v in verdicts if v.status == "pass")
     fails = [v for v in verdicts if v.status != "pass"]
@@ -243,6 +247,43 @@ def render_report(verdicts: list[Verdict], total_queries: int) -> tuple[str, lis
              "rank": v.rank, "category": v.category, "blockers": v.blockers,
              "suggestion": v.suggestion} for v in fails]
     return "\n".join(lines), data
+
+
+JUDGE_SYS = (
+    "You evaluate a command-line search engine. Given a user's task intent and the "
+    "top commands it returned, decide if ANY returned command genuinely accomplishes "
+    "the intent (an equivalent tool counts — the user just needs a working answer). "
+    'Reply ONLY compact JSON: {"satisfied": true|false, "note": "<short reason>"}.'
+)
+
+
+def judge_results(session, model: str, key: str, query: str,
+                  results: list[dict]) -> bool:
+    """LLM judge: did the search return ANY command that satisfies the query?
+    Used to correct the coverage pass-rate (a non-source but equivalent tool in
+    the top results is a real success from the user's perspective)."""
+    listing = "\n".join(
+        f"{i+1}. {r.get('cmd_path')} — {(r.get('description') or '')[:80]}"
+        for i, r in enumerate(results[:5])) or "(no results)"
+    body = {"model": model, "temperature": 0,
+            "messages": [{"role": "system", "content": JUDGE_SYS},
+                         {"role": "user", "content": f"Intent: {query}\nReturned:\n{listing}"}]}
+    for attempt in range(3):
+        try:
+            r = session.post("https://openrouter.ai/api/v1/chat/completions",
+                             headers={"Authorization": f"Bearer {key}"},
+                             json=body, timeout=60)
+            r.raise_for_status()
+            parsed = _extract_json(r.json()["choices"][0]["message"]["content"])
+            if parsed:
+                return bool(parsed.get("satisfied"))
+            if attempt == 2:
+                return False
+        except Exception:
+            if attempt == 2:
+                return False
+        time.sleep(2)
+    return False
 
 
 def run_cmdh(cmdh: str, query: str, limit: int) -> list[dict]:
@@ -274,6 +315,10 @@ def main() -> None:
     ap.add_argument("--fails-json", default="/tmp/coverage_fails.json")
     ap.add_argument("--report", default="", help="write markdown report to this path")
     ap.add_argument("--regen", action="store_true", help="ignore query cache")
+    ap.add_argument("--judge", action="store_true",
+                    help="LLM-judge each fail (does ANY top result satisfy the query?) "
+                         "to report a corrected, equivalent-tool-aware pass rate")
+    ap.add_argument("--judge-cache", default="/tmp/coverage_judge.json")
     args = ap.parse_args()
 
     import requests
@@ -319,6 +364,36 @@ def main() -> None:
         open(args.report, "w").write(md)
     print(md)
     print(f"\n[coverage] fails JSON -> {args.fails_json}", file=sys.stderr)
+
+    if args.judge:
+        from concurrent.futures import ThreadPoolExecutor
+        cache: dict[str, bool] = {}
+        if os.path.exists(args.judge_cache):
+            cache = json.load(open(args.judge_cache))
+        # judge each fail: did the top results satisfy the query anyway (equiv tool)?
+        to_judge = [v for v in fails if v.query not in cache]
+        print(f"[judge] {len(to_judge)} fails to judge ({len(cache)} cached)",
+              file=sys.stderr)
+
+        def jone(v: Verdict):
+            res = searched.get((v.cmd_path, v.query), [])
+            return v.query, judge_results(session, args.model, key, v.query, res)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for i, (q, ok) in enumerate(pool.map(jone, to_judge)):
+                cache[q] = ok
+                if (i + 1) % 200 == 0:
+                    json.dump(cache, open(args.judge_cache, "w"))
+                    print(f"  [judge] {i+1}/{len(to_judge)}", file=sys.stderr)
+        json.dump(cache, open(args.judge_cache, "w"))
+
+        satisfied = sum(1 for v in fails if cache.get(v.query))
+        true_pass = passes_count(verdicts) + satisfied
+        true_fail = total - true_pass
+        print(f"\n[judge] CORRECTED: {true_pass}/{total} satisfied "
+              f"({true_pass / total * 100:.1f}%) — of {len(fails)} raw fails, "
+              f"{satisfied} returned an equivalent tool, {true_fail} are real misses",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":
