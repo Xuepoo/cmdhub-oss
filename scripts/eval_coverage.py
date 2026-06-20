@@ -135,6 +135,43 @@ def suggest_override(v: Verdict) -> str | None:
     return " ".join(seen) if seen else None
 
 
+def _extract_json(text: str) -> dict:
+    """Tolerant JSON extraction: strips ```json fences / preamble, then parses
+    the outermost {...}. Returns {} on failure (deepseek sometimes wraps output)."""
+    if not text:
+        return {}
+    t = text.strip()
+    if "```" in t:                       # drop code fences
+        t = t.replace("```json", "```")
+        parts = t.split("```")
+        t = max(parts, key=len) if len(parts) > 1 else t
+    start, end = t.find("{"), t.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+    try:
+        out = json.loads(t[start:end + 1])
+        return out if isinstance(out, dict) else {}
+    except Exception:
+        return {}
+
+
+def run_searches_parallel(cmdh: str, pairs: list[tuple[str, str]], limit: int,
+                          workers: int) -> dict[tuple[str, str], list[dict]]:
+    """Run cmdh search for many (cmd_path, query) pairs concurrently.
+    subprocess-bound work overlaps well; returns results keyed by the pair."""
+    from concurrent.futures import ThreadPoolExecutor
+    out: dict[tuple[str, str], list[dict]] = {}
+
+    def one(pair):
+        cmd_path, q = pair
+        return pair, run_cmdh(cmdh, q, limit)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for pair, res in pool.map(one, pairs):
+            out[pair] = res
+    return out
+
+
 def _cmd_hash(c: Command) -> str:
     return hashlib.sha1(f"{c.cmd_path}\x00{c.description}".encode()).hexdigest()
 
@@ -151,11 +188,16 @@ def _llm_generate_batch(batch: list[Command], session, model: str, key: str) -> 
                              json=body, timeout=90)
             r.raise_for_status()
             txt = r.json()["choices"][0]["message"]["content"]
-            return json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
+            parsed = _extract_json(txt)
+            if parsed:
+                return parsed
+            # empty parse: retry (transient bad formatting) unless last attempt
+            if attempt == 2:
+                return {}
         except Exception:
             if attempt == 2:
                 return {}
-            time.sleep(2)
+        time.sleep(2)
     return {}
 
 
@@ -223,6 +265,8 @@ def main() -> None:
     ap.add_argument("--proxy", default="http://127.0.0.1:1080")
     ap.add_argument("--queries-per-tool", type=int, default=3)
     ap.add_argument("--batch-size", type=int, default=20)
+    ap.add_argument("--workers", type=int, default=16,
+                    help="parallel cmdh search subprocesses")
     ap.add_argument("--limit", type=int, default=20, help="cmdh --limit (>=20 for near-miss)")
     ap.add_argument("--k", type=int, default=5, help="pass threshold")
     ap.add_argument("--sample", type=int, default=0, help="test only first N commands")
@@ -248,17 +292,20 @@ def main() -> None:
     queries = generate_queries(commands, args.queries_cache, args.queries_per_tool,
                                args.batch_size, session, args.model, key, args.regen)
 
+    pairs = [(c.cmd_path, q) for c in commands for q in queries.get(c.cmd_path, [])]
+    print(f"[coverage] {len(pairs)} searches across {args.workers} workers",
+          file=sys.stderr)
+    searched = run_searches_parallel(args.cmdh, pairs, args.limit, args.workers)
+
     verdicts: list[Verdict] = []
-    total = 0
-    for c in commands:
-        for q in queries.get(c.cmd_path, []):
-            total += 1
-            results = run_cmdh(args.cmdh, q, args.limit)
-            v = evaluate(c.cmd_path, results, args.k)
-            v.query = q
-            if v.status != "pass":
-                v.category = categorize(c.cmd_path, results, args.k)
-            verdicts.append(v)
+    total = len(pairs)
+    for cmd_path, q in pairs:
+        results = searched.get((cmd_path, q), [])
+        v = evaluate(cmd_path, results, args.k)
+        v.query = q
+        if v.status != "pass":
+            v.category = categorize(cmd_path, results, args.k)
+        verdicts.append(v)
 
     fails = [v for v in verdicts if v.status != "pass"]
     attractors = flag_attractors(fails)

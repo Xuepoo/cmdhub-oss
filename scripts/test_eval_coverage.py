@@ -148,3 +148,25 @@ def test_run_cmdh_parses_json(monkeypatch):
         stdout = "not json"
     monkeypatch.setattr(ec.subprocess, "run", lambda *a, **k: Bad())
     assert ec.run_cmdh("cmdh", "x", 5) == []
+
+
+# --- T11: parallel search preserves (cmd_path, query) pairing ---
+def test_run_searches_parallel(monkeypatch):
+    # fake run_cmdh returns the query echoed as the single result's cmd_path
+    monkeypatch.setattr(ec, "run_cmdh",
+                        lambda cmdh, q, limit: [{"cmd_path": q, "verified": True}])
+    pairs = [("tar", "qA"), ("grep", "qB"), ("ls", "qC")]
+    out = ec.run_searches_parallel("cmdh", pairs, limit=20, workers=4)
+    # result dict keyed by (cmd_path, query) -> results, all present and correct
+    assert out[("tar", "qA")][0]["cmd_path"] == "qA"
+    assert out[("grep", "qB")][0]["cmd_path"] == "qB"
+    assert out[("ls", "qC")][0]["cmd_path"] == "qC"
+    assert len(out) == 3
+
+
+# --- T12: robust LLM JSON parse (markdown fence / preamble) ---
+def test_extract_json_robust():
+    assert ec._extract_json('{"a":[1]}') == {"a": [1]}
+    assert ec._extract_json('```json\n{"a":[1]}\n```') == {"a": [1]}
+    assert ec._extract_json('Here you go:\n{"a":[1]}\nhope it helps') == {"a": [1]}
+    assert ec._extract_json('garbage no json') == {}
