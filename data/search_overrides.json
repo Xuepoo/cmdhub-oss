@@ -12,6 +12,9 @@
     }
   ],
   "patch": {
+    "rm": { "topics_append": "delete remove files directories trash erase unlink rm coreutils" },
+    "cmdh": { "topics_append": "offline search find cli command line tool lookup registry local discover commands cmdhub" },
+    "cmdhub": { "topics_append": "offline search find cli command line tool lookup registry local discover commands" },
     "rm.recursive": { "topics_append": "delete remove files rm linux coreutils trash dangerous" },
     "rm.verbose": { "topics_append": "delete remove files rm linux coreutils" },
     "rm.force": { "topics_append": "delete remove files force rm linux" },
