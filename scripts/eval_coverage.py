@@ -44,3 +44,171 @@ def load_commands(db_path: str) -> list[Command]:
     ).fetchall()
     con.close()
     return [Command(cmd_path=p, description=d) for p, d in rows if p]
+
+
+NEAR_MISS_MAX = 20
+
+_STOPWORDS = {
+    "a", "an", "the", "to", "into", "from", "with", "of", "for", "on", "in",
+    "and", "or", "by", "as", "at", "how", "do", "i", "my", "this", "that",
+    "using", "use", "via", "your", "their", "it", "its",
+}
+
+_SEVERITY = {"not_found": 0, "canonical_burial": 1, "inferred_attractor": 1,
+             "sibling_misorder": 2, "genuine_ambiguity": 3}
+
+GEN_SYS = (
+    "You generate test queries for a command-line search engine. For each tool "
+    "given (name + description), output 3 short natural-language queries a user "
+    "would type to find a tool that does that job. CRITICAL: describe the TASK; "
+    "never mention the tool's name or binary. Reply ONLY compact JSON mapping "
+    'each cmd_path to a list of 3 strings: {"<cmd_path>": ["q1","q2","q3"], ...}.'
+)
+
+
+def name_echo_filter(cmd_path: str, query: str) -> bool:
+    """True if the query is clean (keep it); False if it leaks a path token."""
+    q = f" {query.lower()} "
+    for seg in cmd_path.lower().split("."):
+        if len(seg) < 2:
+            continue
+        if f" {seg} " in q or f" {seg}." in q or f" {seg}," in q:
+            return False
+    return True
+
+
+def evaluate(cmd_path: str, results: list[dict], k: int = 5) -> Verdict:
+    rank = None
+    for i, r in enumerate(results):
+        if r.get("cmd_path") == cmd_path:
+            rank = i + 1
+            break
+    if rank is not None and rank <= k:
+        status = "pass"
+    elif rank is not None and rank <= NEAR_MISS_MAX:
+        status = "near_miss"
+    else:
+        status = "fail"
+        rank = None
+    blockers = [r.get("cmd_path", "") for r in results[:k]]
+    return Verdict(cmd_path=cmd_path, query="", status=status, rank=rank,
+                   blockers=blockers)
+
+
+def categorize(cmd_path: str, results: list[dict], k: int = 5) -> str:
+    """Classify why cmd_path failed, by inspecting the top-k blockers.
+    Precedence: not_found > sibling_misorder > canonical_burial > genuine_ambiguity."""
+    top = results[:k]
+    if not top:
+        return "not_found"
+    root = cmd_path.split(".")[0]
+    blocker_paths = [r.get("cmd_path", "") for r in top]
+    if any(bp != cmd_path and bp.split(".")[0] == root for bp in blocker_paths):
+        return "sibling_misorder"
+    if any(r.get("verified") is False for r in top):
+        return "canonical_burial"
+    return "genuine_ambiguity"
+
+
+def flag_attractors(fails: list[Verdict], min_hits: int = 3) -> set[str]:
+    """cmd_paths appearing as the rank-1 blocker across >= min_hits distinct fails."""
+    top1 = Counter(v.blockers[0] for v in fails if v.blockers)
+    return {path for path, n in top1.items() if n >= min_hits}
+
+
+def apply_attractor_category(fails: list[Verdict], attractors: set[str]) -> None:
+    for v in fails:
+        if v.blockers and v.blockers[0] in attractors:
+            v.category = "inferred_attractor"
+
+
+def suggest_override(v: Verdict) -> str | None:
+    """Candidate topics_append for burial-class fails: the query's content words."""
+    if v.category not in ("canonical_burial", "inferred_attractor"):
+        return None
+    words = [w.strip(".,()[]<>") for w in v.query.lower().split()]
+    content = [w for w in words if w and w not in _STOPWORDS and len(w) > 1]
+    seen: list[str] = []
+    for w in content:
+        if w not in seen:
+            seen.append(w)
+    return " ".join(seen) if seen else None
+
+
+def _cmd_hash(c: Command) -> str:
+    return hashlib.sha1(f"{c.cmd_path}\x00{c.description}".encode()).hexdigest()
+
+
+def _llm_generate_batch(batch: list[Command], session, model: str, key: str) -> dict:
+    listing = "\n".join(f"{c.cmd_path}: {c.description[:160]}" for c in batch)
+    body = {"model": model, "temperature": 0.3,
+            "messages": [{"role": "system", "content": GEN_SYS},
+                         {"role": "user", "content": listing}]}
+    for attempt in range(3):
+        try:
+            r = session.post("https://openrouter.ai/api/v1/chat/completions",
+                             headers={"Authorization": f"Bearer {key}"},
+                             json=body, timeout=90)
+            r.raise_for_status()
+            txt = r.json()["choices"][0]["message"]["content"]
+            return json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
+        except Exception:
+            if attempt == 2:
+                return {}
+            time.sleep(2)
+    return {}
+
+
+def generate_queries(commands: list[Command], cache_path: str, per_tool: int,
+                     batch_size: int, session, model: str, key: str,
+                     regen: bool = False) -> dict[str, list[str]]:
+    cache: dict[str, dict] = {}
+    if os.path.exists(cache_path) and not regen:
+        cache = json.load(open(cache_path))
+    todo = [c for c in commands if _cmd_hash(c) not in cache]
+    for i in range(0, len(todo), batch_size):
+        batch = todo[i:i + batch_size]
+        raw = _llm_generate_batch(batch, session, model, key)
+        for c in batch:
+            qs = raw.get(c.cmd_path, []) if isinstance(raw, dict) else []
+            kept = [q for q in qs if isinstance(q, str)
+                    and name_echo_filter(c.cmd_path, q)][:per_tool]
+            cache[_cmd_hash(c)] = {"cmd_path": c.cmd_path, "queries": kept}
+        json.dump(cache, open(cache_path, "w"))
+        print(f"  [gen] {min(i + batch_size, len(todo))}/{len(todo)}",
+              file=sys.stderr, flush=True)
+    return {cache[_cmd_hash(c)]["cmd_path"]: cache[_cmd_hash(c)]["queries"]
+            for c in commands}
+
+
+def render_report(verdicts: list[Verdict], total_queries: int) -> tuple[str, list[dict]]:
+    passes = sum(1 for v in verdicts if v.status == "pass")
+    fails = [v for v in verdicts if v.status != "pass"]
+    fails.sort(key=lambda v: (_SEVERITY.get(v.category, 9), v.cmd_path))
+    cat_counts = Counter(v.category for v in fails)
+    rate = (passes / total_queries * 100) if total_queries else 0.0
+
+    lines = ["# Coverage sweep report", "",
+             f"- queries: {total_queries}  pass: {passes}/{total_queries} ({rate:.1f}%)",
+             f"- near-miss: {sum(1 for v in fails if v.status=='near_miss')}",
+             "- categories: " + ", ".join(f"{c}={n}" for c, n in cat_counts.most_common()),
+             "", "| category | tool | query | top blockers | suggested topics |",
+             "|---|---|---|---|---|"]
+    for v in fails:
+        lines.append(f"| {v.category} | `{v.cmd_path}` | {v.query} | "
+                     f"{', '.join(v.blockers[:3])} | {v.suggestion or ''} |")
+    data = [{"cmd_path": v.cmd_path, "query": v.query, "status": v.status,
+             "rank": v.rank, "category": v.category, "blockers": v.blockers,
+             "suggestion": v.suggestion} for v in fails]
+    return "\n".join(lines), data
+
+
+def run_cmdh(cmdh: str, query: str, limit: int) -> list[dict]:
+    """Run `cmdh search`, return parsed JSON results (empty on any error)."""
+    try:
+        out = subprocess.run([cmdh, "search", query, "--limit", str(limit)],
+                             capture_output=True, text=True, timeout=20)
+        data = json.loads(out.stdout or "[]")
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
