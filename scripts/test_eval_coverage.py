@@ -170,3 +170,28 @@ def test_extract_json_robust():
     assert ec._extract_json('```json\n{"a":[1]}\n```') == {"a": [1]}
     assert ec._extract_json('Here you go:\n{"a":[1]}\nhope it helps') == {"a": [1]}
     assert ec._extract_json('garbage no json') == {}
+
+
+# --- T13: judge corrects "equivalent tool returned" fails ---
+def test_judge_results_parse(monkeypatch):
+    # judge_results returns True when the LLM says a returned cmd satisfies the query
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": '{"satisfied": true, "note": "tracepath works"}'}}]}
+    class FakeSession:
+        def post(self, *a, **k): return FakeResp()
+    ok = ec.judge_results(FakeSession(), "m", "k",
+                          "trace network path to a host",
+                          [{"cmd_path": "tracepath", "description": "trace path"}])
+    assert ok is True
+
+    class FakeRespNo:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": '{"satisfied": false, "note": "unrelated"}'}}]}
+    class FakeSessionNo:
+        def post(self, *a, **k): return FakeRespNo()
+    bad = ec.judge_results(FakeSessionNo(), "m", "k", "q",
+                           [{"cmd_path": "aws.iam.foo", "description": "x"}])
+    assert bad is False
