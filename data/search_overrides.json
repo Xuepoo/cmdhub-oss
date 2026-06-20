@@ -12,6 +12,11 @@
     }
   ],
   "patch": {
+    "look": { "description": "Display lines of a sorted file that begin with a given prefix string (binary search)", "topics_append": "look prefix sorted file binary-search lines beginning util-linux" },
+    "gettext": { "description": "Translate a text message into the user's language using message catalogs (i18n)", "topics_append": "gettext translate i18n localization message catalog gnu" },
+    "grep": { "description": "Search for lines matching a pattern (regex) in files or stdin", "topics_append": "grep search pattern regex text files matching lines filter" },
+    "locate": { "description": "Find files by name quickly using a prebuilt filesystem index", "topics_append": "locate find files by name index database fast mlocate" },
+    "tree": { "description": "List the contents of directories as an indented tree", "topics_append": "tree directory listing recursive indented hierarchy folders" },
     "rm": { "topics_append": "delete remove files directories trash erase unlink rm coreutils" },
     "cmdh": { "topics_append": "offline search find cli command line tool lookup registry local discover commands cmdhub" },
     "cmdhub": { "topics_append": "offline search find cli command line tool lookup registry local discover commands" },
