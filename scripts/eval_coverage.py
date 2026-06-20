@@ -212,3 +212,67 @@ def run_cmdh(cmdh: str, query: str, limit: int) -> list[dict]:
         return data if isinstance(data, list) else []
     except Exception:
         return []
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Reverse-coverage cmdh search tester")
+    ap.add_argument("--cmdh", default=os.path.expanduser("~/.local/share/cargo/bin/cmdh"))
+    ap.add_argument("--db", default="../tmp/rebuild-v4/cmdhub.db",
+                    help="master registry (probe commands)")
+    ap.add_argument("--model", default="deepseek/deepseek-v4-flash")
+    ap.add_argument("--proxy", default="http://127.0.0.1:1080")
+    ap.add_argument("--queries-per-tool", type=int, default=3)
+    ap.add_argument("--batch-size", type=int, default=20)
+    ap.add_argument("--limit", type=int, default=20, help="cmdh --limit (>=20 for near-miss)")
+    ap.add_argument("--k", type=int, default=5, help="pass threshold")
+    ap.add_argument("--sample", type=int, default=0, help="test only first N commands")
+    ap.add_argument("--queries-cache", default="/tmp/coverage_queries.json")
+    ap.add_argument("--fails-json", default="/tmp/coverage_fails.json")
+    ap.add_argument("--report", default="", help="write markdown report to this path")
+    ap.add_argument("--regen", action="store_true", help="ignore query cache")
+    args = ap.parse_args()
+
+    import requests
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        print("[error] set OPENROUTER_API_KEY", file=sys.stderr); sys.exit(1)
+    session = requests.Session()
+    if args.proxy:
+        session.proxies = {"https": args.proxy, "http": args.proxy}
+
+    commands = load_commands(args.db)
+    if args.sample:
+        commands = commands[:args.sample]
+    print(f"[coverage] {len(commands)} probe commands", file=sys.stderr)
+
+    queries = generate_queries(commands, args.queries_cache, args.queries_per_tool,
+                               args.batch_size, session, args.model, key, args.regen)
+
+    verdicts: list[Verdict] = []
+    total = 0
+    for c in commands:
+        for q in queries.get(c.cmd_path, []):
+            total += 1
+            results = run_cmdh(args.cmdh, q, args.limit)
+            v = evaluate(c.cmd_path, results, args.k)
+            v.query = q
+            if v.status != "pass":
+                v.category = categorize(c.cmd_path, results, args.k)
+            verdicts.append(v)
+
+    fails = [v for v in verdicts if v.status != "pass"]
+    attractors = flag_attractors(fails)
+    apply_attractor_category(fails, attractors)
+    for v in fails:
+        v.suggestion = suggest_override(v)
+
+    md, data = render_report(verdicts, total)
+    json.dump(data, open(args.fails_json, "w"), indent=2)
+    if args.report:
+        open(args.report, "w").write(md)
+    print(md)
+    print(f"\n[coverage] fails JSON -> {args.fails_json}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
