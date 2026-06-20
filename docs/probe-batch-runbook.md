@@ -186,3 +186,25 @@ Notes carried forward:
   destructive re-seed (orphan-reaping DELETEs) can trip the auto-mode classifier;
   stage the artifact + presigned URL, then run the apply via an operator-invoked
   script (`! bash …`).
+
+## Coverage tester (eval_coverage.py)
+
+Discovery tool (NOT the release gate — golden stays the gate). For each probe
+command, an LLM generates name-free task queries, runs `cmdh search`, and reports
+unfindable tools categorized (not_found / canonical_burial / inferred_attractor /
+sibling_misorder / genuine_ambiguity) with suggested search_overrides topics.
+
+    OPENROUTER_API_KEY=… uv run --with requests python3 scripts/eval_coverage.py \
+      --db ../tmp/rebuild-v4/cmdhub.db --report /tmp/coverage.md
+    # quick iteration: add --sample 20
+
+Query cache at /tmp/coverage_queries.json (re-runs reuse it; --regen to refresh).
+Machine-readable fails at /tmp/coverage_fails.json. Triage the report: apply
+reviewed topics to data/search_overrides.json, promote high-value fails into
+eval_golden.py, then rebuild + golden-gate as usual.
+
+**First sweep finding (2026-06-20):** mass-probe (batch 11) pulled in many niche
+same-topic tools that now bury canonical subcommands — e.g. git.log/git.commit/
+git.diff fail their own task queries (gview/tig/glv outrank git.log for "view
+commit history"). Fix via search_overrides enrichment of the canonical git
+subcommands; this is the tester's intended use.
