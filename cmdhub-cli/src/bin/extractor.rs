@@ -144,13 +144,14 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
             continue;
         }
 
-        // Extract first line of help output as description
-        let description = help_output
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("Local subcommand shortcut")
-            .trim()
-            .to_string();
+        // The command path as a space-joined string (e.g. "wrangler d1 create"),
+        // used to recognise and skip the title-echo line when picking a description.
+        let cmd_str = if sub_path.is_empty() {
+            target.name.clone()
+        } else {
+            format!("{} {}", target.name, sub_path.join(" "))
+        };
+        let description = extract_description(&help_output, &cmd_str);
 
         let risk_level = if cmd_path.contains("delete")
             || cmd_path.contains("remove")
@@ -195,7 +196,10 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
 
         // Discover next subcommands inside help text if depth is < 3
         if sub_path.len() < 2 {
-            let discovered = parse_subcommands(&help_output);
+            // Full command path so far (binary + sub_path) drives prefix-style parsing.
+            let mut cmd_prefix = vec![target.name.clone()];
+            cmd_prefix.extend(sub_path.iter().cloned());
+            let discovered = parse_subcommands(&help_output, &cmd_prefix);
             for sub in discovered {
                 let mut next_path = sub_path.clone();
                 next_path.push(sub);
@@ -378,49 +382,133 @@ async fn run_probe(executable: &str, args: &[&str]) -> Result<String> {
 }
 
 /// Simple regex/substring helper to extract subcommands listed in '--help' outputs.
-fn parse_subcommands(help_text: &str) -> Vec<String> {
-    let mut subcommands = Vec::new();
-    let mut in_subcommands_section = false;
+/// True when `line` (already trimmed) is just the command echoed back, optionally
+/// followed by placeholder tokens — e.g. `wrangler d1 create <name>` for cmd_str
+/// "wrangler d1 create". Such title lines are not descriptions. A line like
+/// `git — the stupid content tracker` is NOT a title echo (it carries prose).
+fn is_title_echo(line: &str, cmd_str: &str) -> bool {
+    match line.strip_prefix(cmd_str) {
+        Some(rest) => rest.split_whitespace().all(|t| {
+            (t.starts_with('<') && t.ends_with('>')) || (t.starts_with('[') && t.ends_with(']'))
+        }),
+        None => false,
+    }
+}
 
+/// Pick a one-line description from a CLI's `--help`, handling the layouts that
+/// otherwise yield the command echoed back instead of prose:
+/// - **colon style** (az): `az storage : Manage Azure Cloud Storage resources.`
+///   → the text after " : ".
+/// - **title-then-prose** (wrangler): the first line is the command echo
+///   (`wrangler d1 create <name>`), the real summary is the next prose line.
+///
+/// Section headers (`COMMANDS`, all-caps) and flag lines are skipped.
+fn extract_description(help_text: &str, cmd_str: &str) -> String {
+    // Colon style: a line that starts with the command path and has " : <desc>".
     for line in help_text.lines() {
-        let trimmed = line.trim();
-        let lower = trimmed.to_lowercase();
-
-        // Match "commands" or "subcommands" more robustly (e.g. "These are common Git commands:")
-        if !in_subcommands_section
-            && (lower.contains("commands:")
-                || lower.contains("subcommands:")
-                || lower.contains("common git commands")
-                || (lower.contains("commands") && trimmed.ends_with(':')))
-        {
-            in_subcommands_section = true;
+        let t = line.trim();
+        if t.starts_with(cmd_str) {
+            if let Some(idx) = t.find(" : ") {
+                let d = t[idx + 3..].trim();
+                if !d.is_empty() {
+                    return d.to_string();
+                }
+            }
+        }
+    }
+    // Otherwise: first prose line that isn't the title echo, an all-caps section
+    // header, or a flag/positional line.
+    for line in help_text.lines() {
+        let t = line.trim();
+        if t.is_empty() || is_title_echo(t, cmd_str) || t.starts_with('-') {
             continue;
         }
+        let is_caps_header = t
+            .chars()
+            .all(|c| c.is_uppercase() || c.is_whitespace() || c == '&')
+            && t.chars().any(|c| c.is_alphabetic());
+        if is_caps_header {
+            continue;
+        }
+        return t.to_string();
+    }
+    "Local subcommand shortcut".to_string()
+}
 
-        if in_subcommands_section {
-            if trimmed.is_empty() {
-                continue; // Skip empty lines inside section
-            }
-            // If we hit a new header section like "options:" or "flags:", stop parsing
-            if trimmed.ends_with(':') && !trimmed.contains(" ") {
-                break;
-            }
+/// Parse subcommand names from a CLI's `--help`, handling two common layouts:
+///
+/// 1. **Conventional block** (git/docker/az): a `Commands:` / `Subcommands:` /
+///    `Subgroups:` header followed by indented `  name   description` lines.
+/// 2. **Prefix style** (wrangler and other oclif/yargs CLIs): commands are listed
+///    under UPPERCASE section headers *without* a colon, as
+///    `  <full path> <sub> [args]   <emoji> desc`, e.g. `  wrangler d1 create <name>`.
+///    The bare first word is the binary name, so we strip the known command prefix
+///    and take the next token. (This was why wrangler/az probed to 0 subcommands.)
+///
+/// `cmd_prefix` is the materialized command path so far (e.g. `["wrangler", "d1"]`);
+/// it drives the prefix-style extraction. Pass an empty slice to disable pass 1.
+fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
+    let mut subcommands = Vec::new();
+    let mut seen = std::collections::HashSet::new();
 
-            // Subcommands are always indented in help outputs.
-            // Ignore non-indented lines like subcategory headings (e.g., "start a working area")
-            if line.starts_with(' ') || line.starts_with('\t') {
-                if let Some(first_word_raw) = line.split_whitespace().next() {
-                    // Strip trailing commas (e.g., "build, b" -> "build") or semicolons/colons
-                    let first_word = first_word_raw.trim_end_matches(',').trim_end_matches(':');
-                    if first_word.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-                        && !first_word.starts_with('-')
-                        && !first_word.is_empty()
-                        // Ignore general words that are not actually commands (like experimental headers or notes)
-                        && first_word != "See"
-                        && first_word != "EXPERIMENTAL"
-                    {
-                        subcommands.push(first_word.to_string());
-                    }
+    let valid = |w: &str| -> bool {
+        !w.is_empty()
+            && !w.starts_with('-')
+            && w.chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            && w != "See"
+            && w != "EXPERIMENTAL"
+    };
+    let mut push = |w: &str, out: &mut Vec<String>| {
+        if valid(w) && seen.insert(w.to_string()) {
+            out.push(w.to_string());
+        }
+    };
+
+    // Pass 1 — prefix style: indented lines that repeat the full command path, then
+    // the subcommand (`  wrangler d1 create <name>  ...` -> "create").
+    if !cmd_prefix.is_empty() {
+        let prefix = format!("{} ", cmd_prefix.join(" "));
+        for line in help_text.lines() {
+            if !(line.starts_with(' ') || line.starts_with('\t')) {
+                continue; // entries are always indented; skip the title/usage line
+            }
+            if let Some(rest) = line.trim_start().strip_prefix(&prefix) {
+                if let Some(tok) = rest.split_whitespace().next() {
+                    let tok = tok.trim_end_matches(',').trim_end_matches(':');
+                    push(tok, &mut subcommands);
+                }
+            }
+        }
+    }
+
+    // Pass 2 — conventional block style. Re-evaluate at each `Header:` line so
+    // multiple command sections (e.g. az's `Subgroups:` + `Commands:`) are all read
+    // while non-command sections (`Options:` / `Flags:` / `Arguments:`) end the block.
+    let mut in_section = false;
+    for line in help_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Header lines end with ':' and aren't indented entries (an entry like
+        // "name : desc" is indented, so the leading-space check excludes it).
+        if trimmed.ends_with(':') && !line.starts_with(' ') && !line.starts_with('\t') {
+            let h = trimmed.trim_end_matches(':').to_lowercase();
+            in_section = h.contains("command") || h.contains("subgroup");
+            continue;
+        }
+        if in_section && (line.starts_with(' ') || line.starts_with('\t')) {
+            if let Some(first_raw) = line.split_whitespace().next() {
+                let first = first_raw.trim_end_matches(',').trim_end_matches(':');
+                // Skip lines that begin with the binary name — those are prefix-style
+                // entries already handled by pass 1.
+                let is_prefix_line = cmd_prefix
+                    .first()
+                    .map(|b| first == b.as_str())
+                    .unwrap_or(false);
+                if !is_prefix_line {
+                    push(first, &mut subcommands);
                 }
             }
         }
@@ -457,9 +545,16 @@ fn insert_contract(conn: &rusqlite::Connection, contract: &AciCommandContract) -
         (&arg.cmd_path, &app.name, &arg.description),
     )?;
 
-    // Populate mock unit-embeddings (int8[384]) to prevent RRF query execution division-by-zero
-    let mut vec_bytes = vec![0i8 as u8; 384];
-    vec_bytes[0] = 127u8; // unit-ish in int8 space
+    // Populate a placeholder float32[384] embedding (1536 bytes, little-endian) to
+    // match the vec0(float[384]) schema. build_db re-embeds every row, so the value
+    // is irrelevant — it only has to be the right dimension to insert. A unit-ish
+    // first component avoids any RRF division-by-zero before the real embed.
+    let mut emb = vec![0f32; 384];
+    emb[0] = 1.0;
+    let mut vec_bytes = Vec::with_capacity(384 * 4);
+    for v in &emb {
+        vec_bytes.extend_from_slice(&v.to_le_bytes());
+    }
 
     // Safe delete then insert to prevent OR REPLACE virtual table issues in sqlite-vec
     let _ = conn.execute(
@@ -493,7 +588,7 @@ Commands:
 Options:
   -v, --version  Show version
 ";
-        let subcommands = parse_subcommands(help_text_git);
+        let subcommands = parse_subcommands(help_text_git, &[]);
         assert_eq!(subcommands, vec!["clone", "init", "add"]);
 
         let help_text_subcommands = "\
@@ -506,7 +601,7 @@ Subcommands:
 Flags:
   -h, --help  Help
 ";
-        let subcommands_2 = parse_subcommands(help_text_subcommands);
+        let subcommands_2 = parse_subcommands(help_text_subcommands, &[]);
         assert_eq!(subcommands_2, vec!["create", "delete"]);
 
         // Verify it stops parsing on next header like "Options:" or "Flags:"
@@ -517,8 +612,128 @@ Commands:
 Options:
   commit     This should not be parsed as a subcommand because it is under Options
 ";
-        let subcommands_3 = parse_subcommands(help_text_stop);
+        let subcommands_3 = parse_subcommands(help_text_stop, &[]);
         assert_eq!(subcommands_3, vec!["status"]);
+    }
+
+    #[test]
+    fn test_parse_subcommands_wrangler_prefix_style() {
+        // wrangler: UPPERCASE section headers (no colon) + "wrangler <sub>" prefix + emoji.
+        let top = "\
+wrangler
+
+COMMANDS
+  wrangler docs [search..]        \u{1F4DA} Open Wrangler's command documentation
+  wrangler email                  Manage Cloudflare Email services [open beta]
+
+ACCOUNT
+  wrangler login                  \u{1F513} Login to Cloudflare
+
+STORAGE
+  wrangler d1                     \u{1F5C4} Manage Workers D1 databases
+  wrangler r2                     \u{1F4E6} Manage R2 buckets
+
+GLOBAL FLAGS
+  -c, --config          Path to config  [string]
+";
+        let subs = parse_subcommands(top, &["wrangler".to_string()]);
+        assert_eq!(subs, vec!["docs", "email", "login", "d1", "r2"]);
+
+        // Nested: `wrangler d1 --help` repeats the full path "wrangler d1 <sub>".
+        let d1 = "\
+wrangler d1
+
+\u{1F5C4} Manage Workers D1 databases
+
+COMMANDS
+  wrangler d1 create <name>       Creates a new D1 database
+  wrangler d1 list                List all D1 databases in your account
+  wrangler d1 delete <name>       Delete a D1 database
+  wrangler d1 time-travel         Restore, fork or copy a database
+
+GLOBAL FLAGS
+  -h, --help            Show help  [boolean]
+";
+        let subs = parse_subcommands(d1, &["wrangler".to_string(), "d1".to_string()]);
+        assert_eq!(subs, vec!["create", "list", "delete", "time-travel"]);
+    }
+
+    #[test]
+    fn test_parse_subcommands_az_subgroups() {
+        // az: `Subgroups:` + `Commands:` headers, "  name [Preview] : desc" entries.
+        let az = "\
+Group
+    az storage : Manage Azure Cloud Storage resources.
+
+Subgroups:
+    account                  : Manage storage accounts.
+    blob                     : Manage object storage for unstructured data (blobs).
+    message        [Preview] : Manage queue storage messages.
+
+Commands:
+    generate-sas             : Generate a shared access signature.
+
+Global Arguments:
+    --debug                  : Increase logging verbosity.
+";
+        let subs = parse_subcommands(az, &["az".to_string(), "storage".to_string()]);
+        assert_eq!(subs, vec!["account", "blob", "message", "generate-sas"]);
+    }
+
+    #[test]
+    fn test_extract_description_skips_title_echo() {
+        // wrangler leaf: title echo "wrangler d1 create <name>" then the real summary.
+        let create = "\
+wrangler d1 create <name>
+
+Creates a new D1 database, and provides the binding and UUID
+
+POSITIONALS
+  name  The name of the new D1 database  [string] [required]
+";
+        assert_eq!(
+            extract_description(create, "wrangler d1 create"),
+            "Creates a new D1 database, and provides the binding and UUID"
+        );
+
+        // wrangler group: title echo "wrangler d1" then an emoji summary line.
+        let d1 = "\
+wrangler d1
+
+\u{1F5C4} Manage Workers D1 databases
+
+COMMANDS
+  wrangler d1 create <name>  Creates a new D1 database
+";
+        assert_eq!(
+            extract_description(d1, "wrangler d1"),
+            "\u{1F5C4} Manage Workers D1 databases"
+        );
+
+        // az colon style: description follows " : " on the title line.
+        let az = "\
+Group
+    az storage : Manage Azure Cloud Storage resources.
+
+Subgroups:
+    blob : Manage object storage.
+";
+        assert_eq!(
+            extract_description(az, "az storage"),
+            "Manage Azure Cloud Storage resources."
+        );
+
+        // git: first line is real prose that happens to start with the binary name —
+        // must NOT be mistaken for a title echo.
+        let git = "\
+git — the stupid content tracker
+
+Usage: git <command>
+";
+        assert_eq!(
+            extract_description(git, "git"),
+            "git — the stupid content tracker"
+        );
     }
 
     #[tokio::test]
