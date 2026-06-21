@@ -498,6 +498,12 @@ def _embed_text(arg: dict) -> str:
     return f"{path_words}. {desc} {topics}".strip()
 
 
+def _model_id(model_path: str) -> str:
+    """Stable embedding-model identity for the reuse-vectors guard: the model
+    filename without extension (e.g. bge-small-en-v1.5)."""
+    return os.path.splitext(os.path.basename(model_path))[0]
+
+
 # Keyword heuristic for risk_level (replaces per-command LLM judgement for the bulk).
 # A destructive/state-changing verb in the command path or description bumps the level.
 _DANGEROUS_KW = (
@@ -756,6 +762,10 @@ def build(
     conn.execute(
         "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_sync_time', ?)",
         (str(int(time.time())),),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('embed_model', ?)",
+        (_model_id(model_path),),
     )
     conn.commit()
     conn.close()
