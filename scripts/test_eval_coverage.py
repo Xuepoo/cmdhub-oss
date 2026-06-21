@@ -136,17 +136,20 @@ def test_render_report():
     assert {d["cmd_path"] for d in data} == {"tar", "scp"}
 
 
-# --- T9: run_cmdh parsing ---
+# --- T9: run_cmdh parsing (Popen-based) ---
 def test_run_cmdh_parses_json(monkeypatch):
-    class P:
-        stdout = '[{"cmd_path":"tar","verified":true,"description":"x"}]'
-    monkeypatch.setattr(ec.subprocess, "run", lambda *a, **k: P())
+    class FakeProc:
+        def __init__(self, out): self._out = out; self.pid = 12345
+        def communicate(self, timeout=None): return (self._out, "")
+        def kill(self): pass
+    monkeypatch.setattr(ec.subprocess, "Popen",
+                        lambda *a, **k: FakeProc('[{"cmd_path":"tar","verified":true,"description":"x"}]'))
+    monkeypatch.setattr(ec.os, "killpg", lambda *a, **k: None)
+    monkeypatch.setattr(ec.os, "getpgid", lambda pid: pid)
     out = ec.run_cmdh("cmdh", "compress", 5)
     assert out and out[0]["cmd_path"] == "tar"
 
-    class Bad:
-        stdout = "not json"
-    monkeypatch.setattr(ec.subprocess, "run", lambda *a, **k: Bad())
+    monkeypatch.setattr(ec.subprocess, "Popen", lambda *a, **k: FakeProc("not json"))
     assert ec.run_cmdh("cmdh", "x", 5) == []
 
 
@@ -195,3 +198,17 @@ def test_judge_results_parse(monkeypatch):
     bad = ec.judge_results(FakeSessionNo(), "m", "k", "q",
                            [{"cmd_path": "aws.iam.foo", "description": "x"}])
     assert bad is False
+
+
+# --- T14: run_cmdh hard-kills a hung subprocess within timeout ---
+def test_run_cmdh_hard_timeout(tmp_path):
+    import time as _t
+    # a fake "cmdh" that hangs forever, even forking a child, to test process-group kill
+    fake = tmp_path / "hangcmd"
+    fake.write_text("#!/bin/bash\nsleep 300 &\nsleep 300\n")
+    fake.chmod(0o755)
+    t0 = _t.time()
+    out = ec.run_cmdh(str(fake), "anything", 5, timeout=2)
+    elapsed = _t.time() - t0
+    assert out == []                 # hung command yields empty
+    assert elapsed < 8               # killed promptly, not hung for 300s
