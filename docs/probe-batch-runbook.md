@@ -138,11 +138,67 @@ published db sha16, verified-coverage %):
 
 ---
 
+## Incremental release (delta updates)
+
+A small batch should ship a delta, not a fresh 247 MB full DB. The full DB is still
+built + golden-gated + signed every release (the correctness floor); the delta is
+diffed *from* the gated DB, so it inherits its quality. Old CLIs (no `delta=v2`
+capability flag) always receive `mode:full` — never a delta — so their vec table is
+never corrupted. Keep the **previous published** `cmdhub.db` as the baseline.
+
+```bash
+cd cmdhub/cmdhub-oss
+PREV=tmp/published/cmdhub-prev.db      # the last release's DB (the delta base)
+
+# 1. Incremental build: reuse unchanged vectors, only re-embed changed/new commands.
+#    Refuses reuse + falls back to full embed if the embedding model changed.
+bash scripts/build_db_gpu.sh --input /tmp/cmdhub_export.json --output /tmp/cmdhub.db \
+  --compress --reuse-vectors "$PREV"
+
+# 2. Same golden gate as a full release (HARD STOP < 96% / MRR 0.761).
+python3 scripts/validate_db.py /tmp/cmdhub.db
+python3 scripts/eval_golden.py --limit 5 2>&1 | tail -3
+
+# 3. Sign the FULL DB (fallback + first-time/older clients).
+python3 scripts/sign_db.py --zst /tmp/cmdhub.db.zst --version <YYYY.MM.DD>
+
+# 4. Generate the signed delta between prev and new.
+#    --prev-sync-time = the prev release's last_sync_time (from its manifest);
+#    --new-sync-time  = the new full manifest's new_sync_time (must match).
+uv run --with sqlite-vec --with zstandard --with cryptography python3 scripts/gen_delta.py \
+  --prev "$PREV" --new /tmp/cmdhub.db --version <YYYY.MM.DD> \
+  --prev-sync-time <PREV_SYNC> --new-sync-time <NEW_SYNC>
+
+# 5. (optional, pre-publish) prove incremental == full at the data layer:
+uv run --with sqlite-vec python3 scripts/verify_delta_equivalence.py --prev "$PREV" --new /tmp/cmdhub.db
+
+# 6. Publish: uploads full + delta + refreshes db/releases.json (the Worker reads it).
+bash scripts/publish_r2.sh
+```
+
+The Cloudflare Worker at `cdn.cmdhub.org/db/update` reads `db/releases.json` and
+returns: `mode:full` (no `delta=v2`, or many versions behind, or index unreadable),
+`mode:noop` (already latest), or `mode:incremental` (exactly one version behind +
+`delta=v2`). First release / no prev DB: skip steps 1's `--reuse-vectors` and step 4
+— publish full only.
+
+> **First-release note:** `publish_r2.sh` only uploads a delta + chains
+> `prev_sync_time` when a `delta-entry.json` exists in the release dir; otherwise it
+> writes a `releases.json` with `delta: null` (full-only), which is valid.
+
+---
+
 ## Cadence
 
 Manual-trigger weekly to start. First batch = feedback ∪ top-50. Each subsequent
 batch drains new feedback + advances the popularity tier (the selector already
 skips apps that have probe rows, so the top-N window naturally moves forward).
+
+**Release cadence (policy):** ship a release per meaningful batch (real verified-data
+gains) plus a **weekly floor** to fold in accumulated small changes — NOT a fixed
+daily clock (daily emits noisy near-empty deltas and multiplies the ops surface).
+User-uploaded commands land in cloud PostgreSQL (Explore/API visible immediately)
+and enter the offline DB on the next rebuild, independent of this cadence.
 
 ---
 
