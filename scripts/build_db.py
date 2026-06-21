@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build cmdhub.db from a PostgreSQL JSON export with real BGE-micro-v2 embeddings.
+"""Build cmdhub.db from a PostgreSQL JSON export with real BGE-small-en-v1.5 embeddings.
 
 Uses ProcessPoolExecutor (not threads) to bypass Python GIL for true CPU parallelism.
 Each worker process independently loads vocab + ONNX model, tokenizes and infers.
@@ -8,7 +8,7 @@ Usage:
     uv run --with onnxruntime --with sqlite-vec python3 scripts/build_db.py \\
         --input /tmp/cmdhub_export.json \\
         --output /tmp/cmdhub.db \\
-        [--model ~/.local/share/cmdhub/models/bge-micro-v2.onnx] \\
+        [--model ~/.local/share/cmdhub/models/bge-small-en-v1.5.onnx] \\
         [--workers 8] \\
         [--batch-size 128] \\
         [--compress]
@@ -34,7 +34,7 @@ from typing import Any
 
 VOCAB_GZ_PATH = str(Path(__file__).parent.parent / "cmdhub-cli/src/tokenizer/assets/vocab.txt.gz")
 MAX_SEQ_LEN = 512
-EMBED_DIM = 384  # BGE-micro-v2 native output dim; no zero-padding
+EMBED_DIM = 384  # BGE-small-en-v1.5 native output dim; no zero-padding
 
 
 def _load_vocab(gz_path: str) -> dict[str, int]:
@@ -800,12 +800,12 @@ def _compress(db_path: str, apps: list[dict], total: int) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build cmdhub.db with real BGE-micro-v2 embeddings")
+    ap = argparse.ArgumentParser(description="Build cmdhub.db with real BGE-small-en-v1.5 embeddings")
     ap.add_argument("--input", "-i", required=True)
     ap.add_argument("--output", "-o", default="/tmp/cmdhub.db")
     ap.add_argument(
         "--model", "-m",
-        default=os.path.expanduser("~/.local/share/cmdhub/models/bge-micro-v2.onnx"),
+        default=os.path.expanduser("~/.local/share/cmdhub/models/bge-small-en-v1.5.onnx"),
     )
     ap.add_argument("--workers", "-w", type=int, default=8)
     ap.add_argument("--batch-size", type=int, default=128)
