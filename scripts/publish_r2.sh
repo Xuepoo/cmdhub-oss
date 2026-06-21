@@ -47,15 +47,64 @@ put() { # key file content-type cache-control
       --content-type "$3" --cache-control "$4" --only-show-errors
   else
     # wrangler may be killed by timeout after a successful upload; tolerate non-zero exit.
+    # -y skips the data-catalog prompt that otherwise hangs the put indefinitely.
     timeout "${WRANGLER_TIMEOUT:-300}" wrangler r2 object put "$BUCKET/$1" \
-      --file="$2" --content-type="$3" --cache-control="$4" --remote || true
+      --file="$2" --content-type="$3" --cache-control="$4" --remote -y || true
   fi
 }
 
 # Immutable payloads first (so the manifest never points at a missing object), pointer last.
 put "$DB_KEY"   "$DIR/$DB_FILE"      "application/zstd"          "public, max-age=31536000, immutable"
 put "$SIG_KEY"  "$DIR/$SIG_FILE"     "application/octet-stream"  "public, max-age=31536000, immutable"
+# Static db/update kept as a pre-Worker fallback: serves the full manifest to any
+# direct GET. Once the cmdhub-cdn-update Worker is live, its route shadows this for
+# /db/update, but the object staying valid means a safe rollout (no flag-day).
 put "db/update" "$DIR/manifest.json" "application/json"          "public, max-age=60"
 
+# --- Incremental delta + release index (Worker reads db/releases.json) ---
+# If gen_delta.py produced a delta-entry.json in the release dir, upload the delta
+# payload + signature. Then (always) refresh db/releases.json from the full manifest
+# and the optional delta entry.
+if [ -f "$DIR/delta-entry.json" ]; then
+  DELTA_FILE=$(ls "$DIR"/delta-*.json.zst 2>/dev/null | head -1)
+  DELTA_SIG=$(ls "$DIR"/delta-*.json.sig 2>/dev/null | head -1)
+  if [ -n "$DELTA_FILE" ] && [ -n "$DELTA_SIG" ]; then
+    put "db/$(basename "$DELTA_FILE")" "$DELTA_FILE" "application/zstd"         "public, max-age=31536000, immutable"
+    put "db/$(basename "$DELTA_SIG")"  "$DELTA_SIG"  "application/octet-stream" "public, max-age=31536000, immutable"
+  else
+    echo "[error] delta-entry.json present but delta payload/sig missing" >&2; exit 1
+  fi
+fi
+
+# Build db/releases.json: {latest:{version, sync_time, prev_sync_time, full, delta}}.
+# sync_time + full come from the (authoritative) full manifest; prev_sync_time +
+# delta come from delta-entry.json when present (else delta=null, full-only release).
+python3 - "$DIR" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+man = json.load(open(os.path.join(d, "manifest.json")))
+entry = {
+    "version": man["version"],
+    "sync_time": man["new_sync_time"],
+    "prev_sync_time": None,
+    "full": {"url": man["db_url"], "sig_url": man["sig_url"], "sha256": man["sha256"]},
+    "delta": None,
+}
+dp = os.path.join(d, "delta-entry.json")
+if os.path.exists(dp):
+    de = json.load(open(dp))
+    entry["prev_sync_time"] = de["prev_sync_time"]
+    entry["delta"] = de["delta"]
+    # The delta's base + target must line up with the full manifest, or a one-version
+    # -behind client would get a delta that doesn't apply. Fail loudly on mismatch.
+    if de["sync_time"] != man["new_sync_time"]:
+        sys.exit(f"[error] delta sync_time {de['sync_time']} != manifest new_sync_time {man['new_sync_time']}")
+json.dump({"latest": entry}, open(os.path.join(d, "releases.json"), "w"), indent=2)
+print("[publish] releases.json written (delta=%s)" % ("yes" if entry["delta"] else "no"))
+PY
+put "db/releases.json" "$DIR/releases.json" "application/json" "public, max-age=60"
+
 echo "[r2] done. db=$DB_KEY"
-echo "[r2] verify: curl -s https://cdn.cmdhub.org/db/update | python3 -m json.tool"
+echo "[r2] verify (static):  curl -s https://cdn.cmdhub.org/db/update      | python3 -m json.tool"
+echo "[r2] verify (worker):  curl -s 'https://cdn.cmdhub.org/db/update?last_sync_time=0&delta=v2' | python3 -m json.tool"
+echo "[r2] verify (index):   curl -s https://cdn.cmdhub.org/db/releases.json | python3 -m json.tool"
