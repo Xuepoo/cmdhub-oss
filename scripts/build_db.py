@@ -504,6 +504,35 @@ def _model_id(model_path: str) -> str:
     return os.path.splitext(os.path.basename(model_path))[0]
 
 
+def _load_reuse_vectors(prev_db_path: str) -> tuple[dict[tuple[str, str], bytes], str | None]:
+    """From a previous cmdhub.db, return (reuse_map, prev_model_id).
+
+    reuse_map keys are (cmd_path, embed_text) so a vector is reused ONLY when both
+    the path and the exact embed text match — any description/topics edit forces a
+    re-embed. prev_model_id lets the caller refuse reuse across a model change."""
+    import sqlite_vec
+    con = sqlite3.connect(prev_db_path)
+    con.enable_load_extension(True)
+    sqlite_vec.load(con)
+    model = None
+    try:
+        row = con.execute("SELECT value FROM sync_meta WHERE key='embed_model'").fetchone()
+        model = row[0] if row else None
+    except sqlite3.OperationalError:
+        model = None
+    reuse: dict[tuple[str, str], bytes] = {}
+    args = {r[0]: r for r in con.execute(
+        "SELECT cmd_path, COALESCE(description,''), COALESCE(topics,'') FROM arguments")}
+    for cp, vec in con.execute("SELECT cmd_path, embedding FROM commands_vec"):
+        a = args.get(cp)
+        if not a:
+            continue
+        et = _embed_text({"cmd_path": cp, "description": a[1], "topics": a[2]})
+        reuse[(cp, et)] = vec
+    con.close()
+    return reuse, model
+
+
 # Keyword heuristic for risk_level (replaces per-command LLM judgement for the bulk).
 # A destructive/state-changing verb in the command path or description bumps the level.
 _DANGEROUS_KW = (
