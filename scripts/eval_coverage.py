@@ -158,17 +158,25 @@ def _extract_json(text: str) -> dict:
 def run_searches_parallel(cmdh: str, pairs: list[tuple[str, str]], limit: int,
                           workers: int) -> dict[tuple[str, str], list[dict]]:
     """Run cmdh search for many (cmd_path, query) pairs concurrently.
-    subprocess-bound work overlaps well; returns results keyed by the pair."""
-    from concurrent.futures import ThreadPoolExecutor
+
+    Uses as_completed (NOT pool.map) so a single slow search can't block
+    collection of all the others — pool.map yields in submission order, so one
+    hang stalls everything behind it. Each run_cmdh hard-kills on its own
+    timeout; this is the outer safety net. Missing pairs default to [] in main."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     out: dict[tuple[str, str], list[dict]] = {}
-
-    def one(pair):
-        cmd_path, q = pair
-        return pair, run_cmdh(cmdh, q, limit)
-
+    done = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for pair, res in pool.map(one, pairs):
-            out[pair] = res
+        futs = {pool.submit(run_cmdh, cmdh, q, limit): (cp, q) for cp, q in pairs}
+        for fut in as_completed(futs):
+            pair = futs[fut]
+            try:
+                out[pair] = fut.result()
+            except Exception:
+                out[pair] = []
+            done += 1
+            if done % 1000 == 0:
+                print(f"  [search] {done}/{len(pairs)}", file=sys.stderr, flush=True)
     return out
 
 
@@ -286,14 +294,37 @@ def judge_results(session, model: str, key: str, query: str,
     return False
 
 
-def run_cmdh(cmdh: str, query: str, limit: int) -> list[dict]:
-    """Run `cmdh search`, return parsed JSON results (empty on any error)."""
+def run_cmdh(cmdh: str, query: str, limit: int, timeout: int = 20) -> list[dict]:
+    """Run `cmdh search`, return parsed JSON (empty on any error/timeout).
+
+    Uses Popen + a new session (process group) so a hung cmdh — even one that
+    forked children — is hard-killed via killpg on timeout. subprocess.run's
+    timeout only kills the direct child, which left zombie greps that stalled the
+    whole ThreadPool (observed: a single hang froze a 57-min sweep)."""
+    import signal
+    proc = None
     try:
-        out = subprocess.run([cmdh, "search", query, "--limit", str(limit)],
-                             capture_output=True, text=True, timeout=20)
-        data = json.loads(out.stdout or "[]")
+        proc = subprocess.Popen(
+            [cmdh, "search", query, "--limit", str(limit)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, start_new_session=True)
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                proc.kill()
+            proc.communicate()  # reap
+            return []
+        data = json.loads(out or "[]")
         return data if isinstance(data, list) else []
     except Exception:
+        if proc is not None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
         return []
 
 
@@ -366,7 +397,7 @@ def main() -> None:
     print(f"\n[coverage] fails JSON -> {args.fails_json}", file=sys.stderr)
 
     if args.judge:
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         cache: dict[str, bool] = {}
         if os.path.exists(args.judge_cache):
             cache = json.load(open(args.judge_cache))
@@ -380,8 +411,13 @@ def main() -> None:
             return v.query, judge_results(session, args.model, key, v.query, res)
 
         with ThreadPoolExecutor(max_workers=8) as pool:
-            for i, (q, ok) in enumerate(pool.map(jone, to_judge)):
-                cache[q] = ok
+            futs = [pool.submit(jone, v) for v in to_judge]
+            for i, fut in enumerate(as_completed(futs)):
+                try:
+                    q, ok = fut.result()
+                    cache[q] = ok
+                except Exception:
+                    pass
                 if (i + 1) % 200 == 0:
                     json.dump(cache, open(args.judge_cache, "w"))
                     print(f"  [judge] {i+1}/{len(to_judge)}", file=sys.stderr)
