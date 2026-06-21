@@ -27,10 +27,10 @@ fn db_is_empty(path: &std::path::Path) -> bool {
     }
     match Connection::open(path) {
         Ok(c) => match c.query_row("SELECT count(*) FROM apps", [], |r| r.get::<_, i64>(0)) {
-            Ok(n) => n == 0,      // valid schema, no rows → seed
-            Err(_) => false,      // corrupt / unexpected schema → don't overwrite
+            Ok(n) => n == 0, // valid schema, no rows → seed
+            Err(_) => false, // corrupt / unexpected schema → don't overwrite
         },
-        Err(_) => false,          // can't even open → leave it for recovery
+        Err(_) => false, // can't even open → leave it for recovery
     }
 }
 
@@ -48,8 +48,7 @@ pub fn hydrate_starter_if_empty() -> Result<()> {
         return Ok(());
     }
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)
-            .context("Failed to create database parent directories")?;
+        std::fs::create_dir_all(parent).context("Failed to create database parent directories")?;
     }
     // Clear any stale WAL/SHM so the replacement file isn't shadowed by old journals.
     for ext in ["-wal", "-shm"] {
@@ -58,8 +57,7 @@ pub fn hydrate_starter_if_empty() -> Result<()> {
     }
     let decompressed = zstd::decode_all(EMBEDDED_STARTER_DB_ZST)
         .context("Failed to decompress embedded starter database")?;
-    std::fs::write(&db_path, &decompressed)
-        .context("Failed to write embedded starter database")?;
+    std::fs::write(&db_path, &decompressed).context("Failed to write embedded starter database")?;
     eprintln!(
         "Seeded local registry from the built-in starter set. Run `cmdh update` for the full catalog."
     );

@@ -46,7 +46,7 @@ fn test_boundary_quotes_semicolons_emoji() {
     for query in edge_cases {
         let mut cmd = Command::cargo_bin("cmdh").unwrap();
         cmd.env("XDG_DATA_HOME", tmp.path())
-        .env("CMDH_NO_STARTER", "1")
+            .env("CMDH_NO_STARTER", "1")
             .env("XDG_CONFIG_HOME", tmp.path())
             .arg("search")
             .arg(query);
