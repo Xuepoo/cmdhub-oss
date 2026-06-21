@@ -150,3 +150,41 @@ def test_sign_file_helper(tmp_path):
     import hashlib
     pk = Ed25519PrivateKey.from_private_bytes(kp.read_bytes()).public_key()
     pk.verify(sig, hashlib.sha256(payload.read_bytes()).digest())  # raises if bad
+
+
+def _load_verify():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ve", str(pathlib.Path(__file__).parent / "verify_delta_equivalence.py"))
+    ve = importlib.util.module_from_spec(spec); sys.modules["ve"] = ve
+    spec.loader.exec_module(ve)
+    return ve
+
+
+def test_incremental_equals_full(tmp_path):
+    # Core correctness guarantee: applying the delta to prev yields exactly the new DB.
+    # Exercises add (jq), change (grep desc+vec), delete-app (curl), within-app
+    # command delete (git loses git.svn). Vectors fabricated (no model needed).
+    import struct
+    ve = _load_verify()
+    va = struct.pack("384f", *([0.1] * 384))
+    vb = struct.pack("384f", *([0.7] * 384))
+    prev = _mk_full_db(tmp_path, "pe.db",
+        [("a.tar", "tar", None), ("a.grep", "grep", None),
+         ("a.curl", "curl", "brew install curl"), ("a.git", "git", None)],
+        [("tar", "a.tar", "tar", "root", "archive", "safe", None, None, None, None),
+         ("grep", "a.grep", "grep", "root", "search", "safe", None, None, None, None),
+         ("curl", "a.curl", "curl", "root", "transfer", "safe", None, None, None, None),
+         ("git", "a.git", "git", "root", "vcs", "safe", None, None, None, None),
+         ("git.svn", "a.git", "svn", "sub", "svn bridge", "safe", None, None, None, None)],
+        [("tar", va), ("grep", va), ("curl", va), ("git", va), ("git.svn", va)])
+    new = _mk_full_db(tmp_path, "ne.db",
+        [("a.tar", "tar", None), ("a.grep", "grep", None),
+         ("a.git", "git", None), ("a.jq", "jq", None)],
+        [("tar", "a.tar", "tar", "root", "archive", "safe", None, None, None, None),
+         ("grep", "a.grep", "grep", "root", "search regex in files", "safe", None, None, None, None),
+         ("git", "a.git", "git", "root", "vcs", "safe", None, None, None, None),
+         ("jq", "a.jq", "jq", "root", "process json", "safe", None, None, None, None)],
+        [("tar", va), ("grep", vb), ("git", va), ("jq", va)])
+    problems = ve.verify(str(prev), str(new))
+    assert problems == [], problems
