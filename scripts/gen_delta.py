@@ -89,3 +89,51 @@ def diff(prev_db: str, new_db: str) -> dict:
                     if g["app_id"] in dirty_set and cp in nv]
     return {"deleted_apps": deleted_apps, "apps": apps,
             "arguments": arguments, "command_vecs": command_vecs}
+
+
+def main() -> None:
+    import importlib.util
+    ap = argparse.ArgumentParser(description="Generate a signed incremental delta between two cmdhub.db")
+    ap.add_argument("--prev", required=True, help="previous (already-published) cmdhub.db")
+    ap.add_argument("--new", required=True, help="new cmdhub.db (post golden-gate)")
+    ap.add_argument("--version", required=True, help="new release version, e.g. 2026.06.22")
+    ap.add_argument("--prev-sync-time", type=int, required=True,
+                    help="last_sync_time of the prev release (the delta's base)")
+    ap.add_argument("--new-sync-time", type=int, required=True,
+                    help="last_sync_time of the new release (must match the full manifest)")
+    ap.add_argument("--priv", default=os.path.expanduser("~/.config/cmdhub/keys/ed25519_private.bin"))
+    ap.add_argument("--cdn", default="https://cdn.cmdhub.org")
+    ap.add_argument("--out-dir", default="/tmp/cmdhub_release")
+    a = ap.parse_args()
+
+    payload = diff(a.prev, a.new)
+    raw = json.dumps(payload, ensure_ascii=False).encode()
+    import zstandard
+    zst = zstandard.ZstdCompressor(level=19).compress(raw)
+    os.makedirs(a.out_dir, exist_ok=True)
+
+    s_spec = importlib.util.spec_from_file_location(
+        "sd", os.path.join(os.path.dirname(os.path.abspath(__file__)), "sign_db.py"))
+    sd = importlib.util.module_from_spec(s_spec)
+    s_spec.loader.exec_module(sd)
+
+    import hashlib
+    sha = hashlib.sha256(zst).hexdigest()
+    key = f"db/delta-{sha[:16]}.json.zst"
+    sig_key = f"db/delta-{sha[:16]}.json.sig"
+    out_zst = os.path.join(a.out_dir, os.path.basename(key))
+    open(out_zst, "wb").write(zst)
+    _sha, sig = sd.sign_file(out_zst, a.priv)
+    open(os.path.join(a.out_dir, os.path.basename(sig_key)), "wb").write(sig)
+
+    entry = {"version": a.version, "sync_time": a.new_sync_time,
+             "prev_sync_time": a.prev_sync_time,
+             "delta": {"url": f"{a.cdn}/{key}", "sig_url": f"{a.cdn}/{sig_key}", "sha256": sha},
+             "counts": {k: len(v) for k, v in payload.items()}}
+    json.dump(entry, open(os.path.join(a.out_dir, "delta-entry.json"), "w"), indent=2)
+    print(f"[delta] {entry['counts']} -> {out_zst} ({len(zst) / 1e6:.2f} MB)")
+    print(f"[delta] entry -> {a.out_dir}/delta-entry.json")
+
+
+if __name__ == "__main__":
+    main()

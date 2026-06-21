@@ -132,3 +132,21 @@ def test_diff_noop_when_identical(tmp_path):
     new = _mk_full_db(tmp_path, "n3.db", rows_apps, rows_args, rows_vecs)
     payload = gd.diff(prev, new)
     assert payload == {"deleted_apps": [], "apps": [], "arguments": [], "command_vecs": []}
+
+
+def test_sign_file_helper(tmp_path):
+    import importlib.util
+    s_spec = importlib.util.spec_from_file_location(
+        "sd", str(pathlib.Path(__file__).parent / "sign_db.py"))
+    sd = importlib.util.module_from_spec(s_spec); sys.modules["sd"] = sd
+    s_spec.loader.exec_module(sd)
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    kp = tmp_path / "k.bin"
+    kp.write_bytes(Ed25519PrivateKey.generate().private_bytes_raw())
+    payload = tmp_path / "delta.json.zst"; payload.write_bytes(b"\x28\xb5\x2f\xfd\x00")
+    sha, sig = sd.sign_file(str(payload), str(kp))
+    assert len(sig) == 64 and len(sha) == 64  # ed25519 sig, hex sha256
+    # signature verifies against the key's public half over SHA256(blob)
+    import hashlib
+    pk = Ed25519PrivateKey.from_private_bytes(kp.read_bytes()).public_key()
+    pk.verify(sig, hashlib.sha256(payload.read_bytes()).digest())  # raises if bad
