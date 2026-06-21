@@ -570,6 +570,7 @@ def build(
     compress: bool,
     device: str = "cpu",
     overrides_path: str | None = None,
+    reuse_vectors: str | None = None,
 ) -> None:
     t0 = time.time()
 
@@ -612,55 +613,91 @@ def build(
     emb_results: dict[int, bytes] = {}
     completed = 0
 
+    # --reuse-vectors: copy unchanged commands' vectors from a prev DB; only
+    # changed/new commands hit the embedder. Refuse reuse across a model change.
+    reuse_map: dict[tuple[str, str], bytes] = {}
+    if reuse_vectors and os.path.exists(reuse_vectors):
+        rmap, prev_model = _load_reuse_vectors(reuse_vectors)
+        cur_model = _model_id(model_path)
+        if prev_model == cur_model:
+            reuse_map = rmap
+            print(f"[build-db] reuse-vectors: {len(reuse_map)} prev vectors available "
+                  f"(model {cur_model})", file=sys.stderr, flush=True)
+        else:
+            print(f"[build-db] reuse-vectors SKIPPED: model changed "
+                  f"{prev_model} -> {cur_model}; full re-embed", file=sys.stderr, flush=True)
+
+    # Decide per-command: reuse (pre-fill emb_results) or embed (keep in to_embed_idx).
+    to_embed_idx: list[int] = []
+    reused = 0
+    for i in range(total):
+        et = _embed_text(arguments[i])
+        hit = reuse_map.get((arguments[i]["cmd_path"], et))
+        if hit is not None:
+            emb_results[i] = hit
+            reused += 1
+        else:
+            to_embed_idx.append(i)
+    if reuse_map:
+        print(f"[build-db] reused {reused}/{total}, embedding {len(to_embed_idx)}",
+              file=sys.stderr, flush=True)
+
     if device == "cuda":
         # Single-process GPU path: one CUDA session, no ProcessPool. Fast + low system RAM.
-        print(f"[build-db] Embedding on GPU (CUDAExecutionProvider), batch_size={batch_size}",
-              file=sys.stderr, flush=True)
-        chunk = [(i, _embed_text(arguments[i])) for i in range(total)]
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        for orig_idx, emb_bytes in _worker(VOCAB_GZ_PATH, model_path, chunk, batch_size, providers):
-            emb_results[orig_idx] = emb_bytes
+        if not to_embed_idx:
+            print("[build-db] Nothing to embed (all reused)", file=sys.stderr, flush=True)
+        else:
+            print(f"[build-db] Embedding on GPU (CUDAExecutionProvider), batch_size={batch_size}",
+                  file=sys.stderr, flush=True)
+            chunk = [(i, _embed_text(arguments[i])) for i in to_embed_idx]
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            for orig_idx, emb_bytes in _worker(VOCAB_GZ_PATH, model_path, chunk, batch_size, providers):
+                emb_results[orig_idx] = emb_bytes
         completed = total
         rate = completed / (time.time() - t0) if time.time() > t0 else 0
         print(f"[build-db] {completed}/{total} (100%) — {rate:.0f}/s (GPU)", file=sys.stderr, flush=True)
     else:
-        # Partition into CPU worker chunks
-        chunk_size = max(1, (total + workers - 1) // workers)
+        # Partition into CPU worker chunks (only the to-embed indices)
+        idxs = to_embed_idx
+        chunk_size = max(1, (len(idxs) + workers - 1) // workers)
         chunks: list[list[tuple[int, str]]] = []
         for w in range(workers):
             s = w * chunk_size
-            e = min(s + chunk_size, total)
-            if s < total:
-                chunks.append([(i, _embed_text(arguments[i])) for i in range(s, e)])
+            e = min(s + chunk_size, len(idxs))
+            if s < len(idxs):
+                chunks.append([(idxs[k], _embed_text(arguments[idxs[k]])) for k in range(s, e)])
 
         actual_workers = len(chunks)
-        print(
-            f"[build-db] Embedding: {actual_workers} CPU processes × batch_size={batch_size}",
-            file=sys.stderr, flush=True,
-        )
-
-        with ProcessPoolExecutor(max_workers=actual_workers) as pool:
-            futs = {
-                pool.submit(_worker, VOCAB_GZ_PATH, model_path, chunk, batch_size): i
-                for i, chunk in enumerate(chunks)
-            }
-            for fut in as_completed(futs):
-                try:
-                    chunk_res = fut.result()
-                except Exception as exc:
-                    print(f"\n[error] Worker failed: {exc}", file=sys.stderr, flush=True)
-                    raise
-                for orig_idx, emb_bytes in chunk_res:
-                    emb_results[orig_idx] = emb_bytes
-                completed += len(chunk_res)
-                pct = completed * 100 // total
-                elapsed = time.time() - t0
-                rate = completed / elapsed if elapsed > 0 else 0
-                eta = int((total - completed) / rate) if rate > 0 else 0
-                print(
-                    f"[build-db] {completed}/{total} ({pct}%) — {rate:.0f}/s — ETA {eta}s",
-                    file=sys.stderr, flush=True,
-                )
+        if actual_workers == 0:
+            # Everything reused (or empty input) — nothing to embed.
+            print("[build-db] Nothing to embed (all reused)", file=sys.stderr, flush=True)
+        else:
+            print(
+                f"[build-db] Embedding: {actual_workers} CPU processes × batch_size={batch_size}",
+                file=sys.stderr, flush=True,
+            )
+            with ProcessPoolExecutor(max_workers=actual_workers) as pool:
+                futs = {
+                    pool.submit(_worker, VOCAB_GZ_PATH, model_path, chunk, batch_size): i
+                    for i, chunk in enumerate(chunks)
+                }
+                for fut in as_completed(futs):
+                    try:
+                        chunk_res = fut.result()
+                    except Exception as exc:
+                        print(f"\n[error] Worker failed: {exc}", file=sys.stderr, flush=True)
+                        raise
+                    for orig_idx, emb_bytes in chunk_res:
+                        emb_results[orig_idx] = emb_bytes
+                    completed += len(chunk_res)
+                    pct = completed * 100 // len(idxs)
+                    elapsed = time.time() - t0
+                    rate = completed / elapsed if elapsed > 0 else 0
+                    eta = int((len(idxs) - completed) / rate) if rate > 0 else 0
+                    print(
+                        f"[build-db] {completed}/{len(idxs)} ({pct}%) — {rate:.0f}/s — ETA {eta}s",
+                        file=sys.stderr, flush=True,
+                    )
 
     t_embed = time.time() - t0
     print(f"[build-db] Embedding done in {t_embed:.1f}s", file=sys.stderr, flush=True)
@@ -857,6 +894,8 @@ def main() -> None:
         help="Build-time search-quality overrides JSON (applied before embedding). "
              "Pass '' to disable. Env: CMDHUB_BUILD_OVERRIDES.",
     )
+    ap.add_argument("--reuse-vectors", default=None,
+                    help="prev cmdhub.db: copy unchanged commands' vectors instead of re-embedding")
     args = ap.parse_args()
 
     if not os.path.exists(args.model):
@@ -872,6 +911,7 @@ def main() -> None:
         compress=args.compress,
         device=args.device,
         overrides_path=args.overrides or None,
+        reuse_vectors=args.reuse_vectors,
     )
 
 
