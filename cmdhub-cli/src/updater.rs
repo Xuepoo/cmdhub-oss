@@ -34,8 +34,11 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
         }
     }
 
+    // delta=v2 signals this CLI applies float32[384] deltas correctly. The Worker
+    // serves mode:full to any request lacking it, so old CLIs never get a delta
+    // (which would corrupt their vec table).
     let update_url = format!(
-        "{}/db/update?last_sync_time={}",
+        "{}/db/update?last_sync_time={}&delta=v2",
         config.api_url, last_sync_time
     );
 
@@ -286,21 +289,12 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
         }
 
         for vec in payload.command_vecs {
-            // Support both int8_384 (new) and float32_512 (legacy) embedding formats.
-            let is_int8 = vec.embedding.len() == 384;
-            if is_int8 || vec.embedding.len() == 512 {
-                let vec_bytes: Vec<u8> = if is_int8 {
-                    vec.embedding
-                        .iter()
-                        .map(|&v| (v * 127.0).round().clamp(-128.0, 127.0) as i8 as u8)
-                        .collect()
-                } else {
-                    let mut b = Vec::with_capacity(512 * 4);
-                    for &val in &vec.embedding {
-                        b.extend_from_slice(&val.to_ne_bytes());
-                    }
-                    b
-                };
+            // Live format is float32[384] (1536 bytes), matching build_db's
+            // struct.pack("384f") and the vec0(float[384]) table. The old int8/512
+            // branches were for a never-shipped quantized DB and would corrupt the
+            // table; a delta is only ever served to a CLI that sent delta=v2.
+            if vec.embedding.len() == 384 {
+                let vec_bytes = pack_command_vec(&vec.embedding);
                 let _ = tx.execute(
                     "DELETE FROM commands_vec WHERE cmd_path = ?1",
                     rusqlite::params![vec.cmd_path],
@@ -396,6 +390,16 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Pack a float32[384] embedding as little-endian bytes — the format build_db
+/// writes (struct.pack("384f")) and the vec0(float[384]) table expects (1536 bytes).
+fn pack_command_vec(emb: &[f32]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(emb.len() * 4);
+    for &v in emb {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b
+}
+
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut chars = s.chars().peekable();
@@ -407,4 +411,20 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
         }
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The delta carries float32[384]; the stored blob must be 384*4 = 1536 bytes,
+    // identical to what build_db writes (struct.pack("384f"), little-endian).
+    #[test]
+    fn float32_384_vec_packs_to_1536_bytes() {
+        let emb: Vec<f32> = vec![0.5f32; 384];
+        let bytes = pack_command_vec(&emb);
+        assert_eq!(bytes.len(), 384 * 4);
+        let first = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        assert!((first - 0.5).abs() < 1e-6);
+    }
 }

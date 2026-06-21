@@ -38,6 +38,17 @@ def _content_keys(sha_hex: str) -> tuple[str, str]:
     return f"db/cmdhub-{short}.db.zst", f"db/cmdhub-{short}.db.sig"
 
 
+def sign_file(path: str, priv_path: str) -> tuple[str, bytes]:
+    """Return (sha256_hex, ed25519_signature_bytes) for a file, signing the
+    32-byte SHA-256 exactly as the CLI verifies."""
+    blob = open(path, "rb").read()
+    h = hashlib.sha256(blob)
+    sk = Ed25519PrivateKey.from_private_bytes(open(priv_path, "rb").read())
+    sig = sk.sign(h.digest())
+    sk.public_key().verify(sig, h.digest())  # fail loudly if key != shipped public key
+    return h.hexdigest(), sig
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--zst", required=True, help="compressed database (.zst)")
@@ -52,15 +63,8 @@ def main() -> None:
     if not os.path.exists(a.priv):
         print(f"[error] no private key at {a.priv} (run keygen first)", file=sys.stderr); sys.exit(1)
 
-    blob = open(a.zst, "rb").read()
-    h = hashlib.sha256(blob)
-    digest = h.digest()       # 32 raw bytes — the message that gets signed/verified
-    sha_hex = h.hexdigest()   # hex string for the manifest
-
-    sk = Ed25519PrivateKey.from_private_bytes(open(a.priv, "rb").read())
-    signature = sk.sign(digest)  # sign the 32-byte SHA-256, exactly what the CLI verifies
-    # Fail loudly if the local key does not match the public key the CLI ships.
-    sk.public_key().verify(signature, digest)
+    blob_len = os.path.getsize(a.zst)
+    sha_hex, signature = sign_file(a.zst, a.priv)  # signs SHA-256(blob), verifies against public key
 
     db_key, sig_key = _content_keys(sha_hex)
     os.makedirs(a.out_dir, exist_ok=True)
@@ -83,7 +87,7 @@ def main() -> None:
 
     print(f"[sign] sha256={sha_hex}")
     print(f"[sign] signature ({len(signature)}B) -> {sig_out}")
-    print(f"[sign] db   -> {db_out}  ({len(blob)/1e6:.1f} MB)")
+    print(f"[sign] db   -> {db_out}  ({blob_len/1e6:.1f} MB)")
     print(f"[sign] manifest -> {man_out}")
     print(f"[sign] R2 upload keys: {db_key}, {sig_key}, {MANIFEST_KEY}")
 
