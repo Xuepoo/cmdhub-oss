@@ -46,3 +46,89 @@ def test_load_prev_vectors_model_mismatch_returns_none(tmp_path):
     prev = _mk_db(tmp_path, "prevm.db", [("tar", "archive files", v)], model="bge-micro-v2")
     reuse, model = bd._load_reuse_vectors(prev)
     assert model == "bge-micro-v2"   # caller compares to current and refuses reuse
+
+
+def _load_gd():
+    import importlib.util
+    gd_spec = importlib.util.spec_from_file_location(
+        "gd", str(pathlib.Path(__file__).parent / "gen_delta.py"))
+    gd = importlib.util.module_from_spec(gd_spec); sys.modules["gd"] = gd
+    gd_spec.loader.exec_module(gd)
+    return gd
+
+
+def _mk_full_db(tmp_path, name, apps, args, vecs):
+    import sqlite_vec
+    db = tmp_path / name
+    c = sqlite3.connect(db); c.enable_load_extension(True); sqlite_vec.load(c)
+    c.execute("CREATE TABLE apps (app_id TEXT PRIMARY KEY, name TEXT, install_instructions TEXT)")
+    c.execute("CREATE TABLE arguments (cmd_path TEXT, app_id TEXT, node_name TEXT, node_type TEXT, description TEXT, risk_level TEXT, example_template TEXT, docker_image TEXT, script_url TEXT, source_url TEXT)")
+    c.execute("CREATE VIRTUAL TABLE commands_vec USING vec0(cmd_path TEXT PRIMARY KEY, embedding float[384])")
+    for a in apps:
+        c.execute("INSERT INTO apps VALUES (?,?,?)", a)
+    for g in args:
+        c.execute("INSERT INTO arguments (cmd_path,app_id,node_name,node_type,description,risk_level,example_template,docker_image,script_url,source_url) VALUES (?,?,?,?,?,?,?,?,?,?)", g)
+    for cp, vec in vecs:
+        c.execute("INSERT INTO commands_vec (cmd_path, embedding) VALUES (?,?)", (cp, vec))
+    c.commit(); c.close(); return str(db)
+
+
+def test_diff_payload(tmp_path):
+    import struct
+    gd = _load_gd()
+    v = struct.pack("384f", *([0.2] * 384))
+    v2 = struct.pack("384f", *([0.9] * 384))
+    prev = _mk_full_db(tmp_path, "p.db",
+        [("a.keep", "keep", None), ("a.del", "del", None)],
+        [("keep", "a.keep", "keep", "root", "old desc", "safe", None, None, None, None),
+         ("gone", "a.del", "gone", "root", "x", "safe", None, None, None, None)],
+        [("keep", v), ("gone", v)])
+    new = _mk_full_db(tmp_path, "n.db",
+        [("a.keep", "keep", None), ("a.new", "new", None)],
+        [("keep", "a.keep", "keep", "root", "NEW desc", "safe", None, None, None, None),
+         ("fresh", "a.new", "fresh", "root", "y", "safe", None, None, None, None)],
+        [("keep", v2), ("fresh", v)])
+    payload = gd.diff(prev, new)
+    assert payload["deleted_apps"] == ["a.del"]
+    assert {a["app_id"] for a in payload["apps"]} == {"a.keep", "a.new"}  # keep changed, new added
+    cps = {g["cmd_path"] for g in payload["arguments"]}
+    assert cps == {"keep", "fresh"}                  # changed + new args
+    vc = {x["cmd_path"]: x["embedding"] for x in payload["command_vecs"]}
+    assert set(vc) == {"keep", "fresh"}              # changed + new vecs
+    assert len(vc["keep"]) == 384 and abs(vc["keep"][0] - 0.9) < 1e-5   # float32, new value
+
+
+def test_diff_within_app_command_deletion(tmp_path):
+    # A command removed from an app whose row is otherwise unchanged: the app must
+    # be emitted (dirty) with ONLY its surviving commands, so the client's
+    # wipe+reinsert drops the removed command. This is the app-scoped invariant.
+    import struct
+    gd = _load_gd()
+    v = struct.pack("384f", *([0.3] * 384))
+    prev = _mk_full_db(tmp_path, "p2.db",
+        [("a.git", "git", None)],
+        [("git", "a.git", "git", "root", "vcs", "safe", None, None, None, None),
+         ("git.svn", "a.git", "svn", "sub", "subversion bridge", "safe", None, None, None, None)],
+        [("git", v), ("git.svn", v)])
+    new = _mk_full_db(tmp_path, "n2.db",
+        [("a.git", "git", None)],
+        [("git", "a.git", "git", "root", "vcs", "safe", None, None, None, None)],
+        [("git", v)])
+    payload = gd.diff(prev, new)
+    assert payload["deleted_apps"] == []
+    assert {a["app_id"] for a in payload["apps"]} == {"a.git"}   # dirty: command removed
+    assert {g["cmd_path"] for g in payload["arguments"]} == {"git"}  # only survivor
+    assert {x["cmd_path"] for x in payload["command_vecs"]} == {"git"}
+
+
+def test_diff_noop_when_identical(tmp_path):
+    import struct
+    gd = _load_gd()
+    v = struct.pack("384f", *([0.4] * 384))
+    rows_apps = [("a.ls", "ls", None)]
+    rows_args = [("ls", "a.ls", "ls", "root", "list files", "safe", None, None, None, None)]
+    rows_vecs = [("ls", v)]
+    prev = _mk_full_db(tmp_path, "p3.db", rows_apps, rows_args, rows_vecs)
+    new = _mk_full_db(tmp_path, "n3.db", rows_apps, rows_args, rows_vecs)
+    payload = gd.diff(prev, new)
+    assert payload == {"deleted_apps": [], "apps": [], "arguments": [], "command_vecs": []}
