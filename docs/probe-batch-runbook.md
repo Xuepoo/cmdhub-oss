@@ -239,7 +239,7 @@ Notes carried forward:
   fabrication sweep (BACKLOG #13 follow-up b) — and care: `docker-compose` v1,
   `docker-machine`, `podman-compose`, `podman-tui` are REAL tools, not fakes.
 - **Prod writes are permission-gated.** The Step-1 feedback read and the Step-7
-  destructive re-seed (orphan-reaping DELETEs) can trip the auto-mode classifier;
+  destructive re-seed (orphan-reaping DELETE statements) can trip the auto-mode classifier;
   stage the artifact + presigned URL, then run the apply via an operator-invoked
   script (`! bash …`).
 

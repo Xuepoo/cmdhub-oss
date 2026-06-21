@@ -8,6 +8,13 @@ extend-exclude = [
   "*.min.css",
 ]
 
+[default]
+extend-ignore-re = [
+  # content-addressed sha16 hashes in the probe-batch log (random hex may form
+  # dictionary-like fragments, e.g. "...ede..." -> "edge"); ignore the whole token.
+  "\\b[0-9a-f]{16}\\b",
+]
+
 [default.extend-words]
 # Add project-specific false positives here
 # e.g., ght = "ght"
@@ -18,3 +25,4 @@ fts = "fts"
 rrf = "rrf"
 pgvector = "pgvector"
 sqlite_vec = "sqlite_vec"
+mis = "mis"  # "mis-detects"/"mis-detected" — valid hyphenated prefix in the runbook
