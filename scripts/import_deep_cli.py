@@ -126,11 +126,38 @@ def _extract_man_description(text: str, max_chars: int = 300) -> str:
 # Detected by option/arg-placeholder brackets that prose descriptions don't carry.
 _SYNOPSIS_RE = re.compile(r"\[opt|\bor:\s|<[a-z0-9_.-]+>|\|", re.IGNORECASE)
 
+# A flag/option line (shellcheck, pyfiglet help bodies): "-a --check-sourced ...",
+# "--version show ...", "-f FONT, --font=FONT ...". Real prose almost never opens
+# with a hyphen-letter, so skipping these recovers the actual summary line.
+_FLAG_LINE_RE = re.compile(r"^--?[A-Za-z0-9]")
+# A bare version banner: "fonttools v4.63.0", "tool 1.2.3", "v4.63.0".
+_VERSION_LINE_RE = re.compile(r"^(\S+\s+)?v?\d+\.\d+(\.\d+)?\S*\s*$", re.IGNORECASE)
+# Copyright / license / arg-spec banners that crept in as descriptions.
+_BANNER_PREFIXES = ("copyright", "license", "compargs:", "tiffargs:", "convargs:",
+                    "defargs:", "written by", "report bugs", "full documentation")
+# Bare section labels emitted by az-style help (a lone "Group"/"Command"/...).
+_BARE_LABELS = {"group", "command", "commands", "subgroups", "subcommands",
+                "description", "arguments", "options", "flags"}
+
 
 def _is_synopsis(s: str, low: str) -> bool:
     if low.startswith(("usage:", "or:")):
         return True
     return bool(_SYNOPSIS_RE.search(s))
+
+
+def _is_nondescriptive(s: str, low: str) -> bool:
+    """A line that must never be used as a description: synopsis, flag dump, version
+    banner, copyright/license/arg-spec banner, or a bare section label."""
+    if _is_synopsis(s, low):
+        return True
+    if _FLAG_LINE_RE.match(s):
+        return True
+    if _VERSION_LINE_RE.match(s):
+        return True
+    if low in _BARE_LABELS:
+        return True
+    return any(low.startswith(p) for p in _BANNER_PREFIXES)
 
 
 def _extract_description(text: str, max_chars: int = 300) -> str:
@@ -156,9 +183,11 @@ def _extract_description(text: str, max_chars: int = 300) -> str:
             continue
         if _NOISE_LINE_RE.match(s):
             continue
-        # Skip wrapped usage-synopsis lines (look's "look [options] <string>",
-        # chmod's "or:  chmod [OPTION]...") so the real prose description wins.
-        if not buf and _is_synopsis(s, low):
+        # Before any prose is collected, skip non-descriptive lines (wrapped synopsis,
+        # flag dumps, version/copyright banners, bare section labels) so the real
+        # summary wins: look's "look [options] <string>", shellcheck's "-a ...",
+        # "fonttools v4.63.0", zip's "Copyright ...", az's lone "Group".
+        if not buf and _is_nondescriptive(s, low):
             continue
         buf.append(s)
         if len(" ".join(buf)) >= max_chars:
