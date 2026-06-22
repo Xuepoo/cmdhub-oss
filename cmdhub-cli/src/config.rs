@@ -178,9 +178,12 @@ fn default_risk_guard_level() -> String {
 }
 
 fn default_update_url() -> String {
-    // cdn today (R2 static manifest = always full, safe). Switch to the Worker host
-    // (https://update.cmdhub.org) at the release that enables delta downloads.
-    "https://cdn.cmdhub.org".to_string()
+    // The standalone Worker host serving capability-gated delta manifests. cdn.cmdhub.org
+    // is an R2 custom domain that intercepts /db/update before any Worker route, so the
+    // manifest endpoint lives on its own host. DB/delta files still download from
+    // cdn.cmdhub.org (R2) via the manifest's absolute URLs. Old clients (no update_url
+    // field) used the prior cdn default and keep getting R2 static full — safe.
+    "https://update.cmdhub.org".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -221,8 +224,8 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.risk_guard_level, "ask");
-        // update_url absent in the TOML -> serde default (back-compat for old configs).
-        assert_eq!(config.update_url, "https://cdn.cmdhub.org");
+        // update_url absent in the TOML -> serde default (the Worker manifest host).
+        assert_eq!(config.update_url, "https://update.cmdhub.org");
         assert_eq!(config.output.mode, "full");
         assert_eq!(config.install.os, None);
         assert_eq!(
