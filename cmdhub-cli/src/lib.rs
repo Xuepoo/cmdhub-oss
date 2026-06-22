@@ -13,6 +13,26 @@ pub mod runner;
 pub mod tokenizer;
 pub mod updater;
 
+/// Restore the default SIGPIPE disposition (SIG_DFL).
+///
+/// Rust sets SIGPIPE to SIG_IGN at startup, so writing to a closed pipe surfaces as
+/// an `io::ErrorKind::BrokenPipe` (EPIPE / "os error 32") which `println!` turns into
+/// a panic. For a CLI that streams JSON to stdout, a downstream `| head`/`| jq` that
+/// closes early is normal, not an error — restoring SIG_DFL makes the process exit
+/// silently on a broken pipe like every standard Unix tool (ripgrep/fd do the same).
+/// Call once at startup before any stdout I/O.
+#[cfg(unix)]
+pub fn reset_sigpipe() {
+    // SAFETY: setting a signal to its default disposition is async-signal-safe and
+    // done once before any pipe I/O.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn reset_sigpipe() {}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "cmdh",
@@ -289,4 +309,24 @@ package_managers = ["uv", "npm", "cargo", "go"]
     }
 
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_sigpipe_sets_default_disposition() {
+        // After reset_sigpipe, SIGPIPE must be SIG_DFL (not Rust's startup SIG_IGN),
+        // so a broken pipe terminates quietly instead of EPIPE-panicking on stdout.
+        reset_sigpipe();
+        // signal() returns the PREVIOUS handler; calling it again returns what
+        // reset_sigpipe just installed. Restore it immediately to avoid side effects.
+        let prev = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+        assert_eq!(
+            prev,
+            libc::SIG_DFL,
+            "SIGPIPE should be SIG_DFL after reset_sigpipe"
+        );
+    }
 }
