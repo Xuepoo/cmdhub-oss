@@ -139,16 +139,39 @@ _BANNER_PREFIXES = ("copyright", "license", "compargs:", "tiffargs:", "convargs:
 _BARE_LABELS = {"group", "command", "commands", "subgroups", "subcommands",
                 "description", "arguments", "options", "flags"}
 
+# Crash / failed-probe noise captured when a bare binary was run (no --help): a
+# segfault dump, "core dumped", a shell line-error, "command not found". These mean
+# the probe produced NO real help — never a description.
+_CRASH_RE = re.compile(
+    r"segmentation fault|core dumped|\bline \d+:|: command not found|"
+    r"no such file or directory|traceback \(most recent call last\)|killed",
+    re.IGNORECASE,
+)
+# A `ps`-style process-snapshot row: a PID then a tty/pts column (the tool ran and
+# dumped the live process table instead of help).
+_PROC_SNAPSHOT_RE = re.compile(r"^\s*\d+\s+(\?|tty\S*|pts/\d+)\s", re.IGNORECASE)
+# A flag/option dump that does NOT start with '-' (awk: "POSIX options: GNU long
+# options: -f ..."): a line that announces options then lists them.
+_OPTIONS_DUMP_RE = re.compile(r"\boptions:\s", re.IGNORECASE)
+# A version+build banner that isn't version-first (vimdiff: "VIM - Vi IMproved 9.2
+# (2026 Feb 14, compiled ...)"): prose-looking but it's a version line with a build
+# paren. Require a version number AND a build/date parenthesis to avoid eating real
+# prose that merely contains a number.
+_VERSION_BANNER_RE = re.compile(r"\d+\.\d+.*\((?:.*\b(?:compiled|built|20\d\d)\b)", re.IGNORECASE)
+# Trailing "[version 1.8.1]" / "[v1.2]" noise on an otherwise-good description (jq).
+_TRAILING_VERSION_RE = re.compile(r"\s*\[\s*v(?:ersion)?[\s.]*\d[\w.\-]*\s*\]\s*$", re.IGNORECASE)
+
 
 def _is_synopsis(s: str, low: str) -> bool:
-    if low.startswith(("usage:", "or:")):
+    if low.startswith(("usage:", "or:", "or ")):
         return True
     return bool(_SYNOPSIS_RE.search(s))
 
 
 def _is_nondescriptive(s: str, low: str) -> bool:
     """A line that must never be used as a description: synopsis, flag dump, version
-    banner, copyright/license/arg-spec banner, or a bare section label."""
+    banner, copyright/license/arg-spec banner, crash/process-snapshot noise, or a
+    bare section label."""
     if _is_synopsis(s, low):
         return True
     if _FLAG_LINE_RE.match(s):
@@ -156,6 +179,14 @@ def _is_nondescriptive(s: str, low: str) -> bool:
     if _VERSION_LINE_RE.match(s):
         return True
     if low in _BARE_LABELS:
+        return True
+    if _CRASH_RE.search(s):
+        return True
+    if _PROC_SNAPSHOT_RE.match(s):
+        return True
+    if _OPTIONS_DUMP_RE.search(s):
+        return True
+    if _VERSION_BANNER_RE.search(s):
         return True
     return any(low.startswith(p) for p in _BANNER_PREFIXES)
 
@@ -193,7 +224,35 @@ def _extract_description(text: str, max_chars: int = 300) -> str:
         if len(" ".join(buf)) >= max_chars:
             break
     desc = _WS_RE.sub(" ", " ".join(buf)).strip()
-    return desc[:max_chars] if desc else ""
+    # Strip a trailing "[version 1.8.1]" suffix on an otherwise-good prose line (jq).
+    desc = _TRAILING_VERSION_RE.sub("", desc).strip()
+    if not _looks_like_prose(desc):
+        # The first surviving line still isn't a real description (the whole --help is
+        # synopsis/flags/error fragments — xxd "or xxd -r ...", awk "To report bugs..."
+        # ps "for additional help text."). Return "" so the caller / L2 LLM supplies one
+        # rather than storing a fragment. Avoids whack-a-mole on every odd help format.
+        return ""
+    return desc[:max_chars]
+
+
+def _looks_like_prose(s: str) -> bool:
+    """A real one-line description reads like a sentence/phrase, not a synopsis or
+    fragment. Require enough words and a low bracket/flag density."""
+    if not s or len(s) < 12:
+        return False
+    if _is_nondescriptive(s, s.lower()):
+        return False
+    words = s.split()
+    if len(words) < 3:
+        return False
+    # Synopsis/flag fragments are dense in brackets, dashes-as-flags, and pipes.
+    flagish = sum(1 for w in words if w.startswith("-") or w.startswith("[") or w.startswith("<"))
+    if flagish >= max(2, len(words) // 3):
+        return False
+    # Must contain an actual alphabetic word of length >=3 (not just symbols/paths).
+    if not any(w.isalpha() and len(w) >= 3 for w in words):
+        return False
+    return True
 
 
 # Xuepoo's own tools get GitHub-namespaced app_ids (repo, which may differ from the binary).
