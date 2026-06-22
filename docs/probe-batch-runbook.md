@@ -138,6 +138,30 @@ published db sha16, verified-coverage %):
 
 ---
 
+## Description cleanup (data-quality round 2)
+
+Many older rows have descriptions that are raw `--help` fragments (flag dumps,
+`Usage:`/`or:` synopsis, version banners, `Copyright …`, bare section labels like
+az's `Group`), which breaks vector search. The durable fix is the improved
+`_extract_description` in `import_deep_cli.py` (#47) — it now skips all those via
+`_is_nondescriptive`, so **all future probes get clean descriptions automatically**.
+
+To fix EXISTING rows without re-probing, re-extract from the archived raw `--help`
+(`tmp/probe-archive/**/*.json`, each record has a `text` field). Batch scripts are
+archived at `tmp/probe-archive/round2-descriptions/` (extract.py = L1 re-extract +
+L2 queue; l2.py = deepseek-flash summarizer). Two-tier:
+
+- **L1** (free): re-run `_extract_description` over archived raw help → fixes rows
+  with a real prose line buried under noise (~86% of fixable).
+- **L2** (deepseek-flash, ~cents): rows whose `--help` has NO prose at all → LLM
+  summarizes to ≤15 words. Cached by cmd_path. UNKNOWN for genuinely uninformative help.
+
+Apply the `{cmd_path: description}` fixes to a copy of the live DB (UPDATE arguments
++ keep apps_fts capabilities in sync), then follow the incremental-release flow below
+(`--reuse-vectors` re-embeds only the changed rows). Batch #12-desc (2026-06-22):
+645 rows fixed (577 L1 + 68 L2), golden 100%/0.917, shipped v2026.06.22.2.
+**Residual:** rows with no LOCAL archived raw help need the VPS archives or a re-probe.
+
 ## Incremental release (delta updates)
 
 A small batch should ship a delta, not a fresh 247 MB full DB. The full DB is still
