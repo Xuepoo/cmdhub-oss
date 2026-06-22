@@ -68,3 +68,39 @@ def test_keeps_normal_prose():
     # A clean description starting with a normal word is unaffected.
     t = "Usage: tar [OPTION...] [FILE]...\n\nGNU tar saves many files into one archive.\n"
     assert _desc(t) == "GNU tar saves many files into one archive."
+
+
+def test_skips_process_snapshot():
+    # `ps` run bare dumps the live process table — never a description.
+    t = "6937 tty1    S<s+   0:00 /usr/bin/sh /usr/lib/uwsm/signal-handler\n6941 tty1    Sl+    0:02 hyprland\n"
+    assert _desc(t) == ""
+
+
+def test_skips_crash_output():
+    # A segfault / shell line-error capture (btrfs-assistant) is failed-probe noise.
+    t = "/usr/bin/btrfs-assistant: line 46: 3221726 Segmentation fault (core dumped)\n"
+    assert _desc(t) == ""
+
+
+def test_skips_options_dump_not_dash_prefixed():
+    # awk: a flag dump that announces "options:" before listing them (no leading '-').
+    t = "POSIX options:        GNU long options: (standard)\n  -f progfile  --file=progfile\n"
+    assert _desc(t) == ""
+
+
+def test_skips_or_space_synopsis():
+    # xxd: a wrapped synopsis continuation starting with "or " (space, not "or:").
+    t = "or xxd -r [-s [-]offset] [-c cols] [-ps] [infile [outfile]]\n"
+    assert _desc(t) == ""
+
+
+def test_skips_version_build_banner():
+    # vimdiff: "VIM - Vi IMproved 9.2 (2026 Feb 14, compiled ...)" — version+build banner.
+    t = "VIM - Vi IMproved 9.2 (2026 Feb 14, compiled Jun 17 2026 22:10:00)\n"
+    assert _desc(t) == ""
+
+
+def test_strips_trailing_version_suffix():
+    # jq: real prose with a trailing "[version 1.8.1-dirty]" noise suffix.
+    t = "jq - commandline JSON processor [version 1.8.1-dirty]\n"
+    assert _desc(t) == "jq - commandline JSON processor"
