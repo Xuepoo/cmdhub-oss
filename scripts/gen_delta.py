@@ -18,9 +18,15 @@ def _open(p):
     return c
 
 
+# Columns must cover every required field of cmdhub_shared::DbApp (aci.rs), or the
+# Rust client's serde deserialization of IncrementalSyncPayload fails. popularity is
+# a non-Option f64 -> it MUST be present (a missing-field error otherwise).
+_APP_COLS = ("app_id", "name", "os_aliases", "install_instructions", "popularity")
+
+
 def _apps(c):
-    return {r[0]: r for r in c.execute(
-        "SELECT app_id, name, install_instructions FROM apps")}
+    return {r[0]: dict(zip(_APP_COLS, r))
+            for r in c.execute(f"SELECT {','.join(_APP_COLS)} FROM apps")}
 
 
 _ARG_COLS = ("cmd_path,app_id,node_name,node_type,description,risk_level,"
@@ -81,7 +87,11 @@ def diff(prev_db: str, new_db: str) -> dict:
     dirty = [aid for aid in na if app_is_dirty(aid)]
     dirty_set = set(dirty)
 
-    apps = [{"app_id": na[a][0], "name": na[a][1], "install_instructions": na[a][2]}
+    # Emit the full DbApp shape (cmdhub_shared::aci.rs) — popularity is required.
+    apps = [{"app_id": na[a]["app_id"], "name": na[a]["name"],
+             "os_aliases": na[a]["os_aliases"],
+             "install_instructions": na[a]["install_instructions"],
+             "popularity": na[a]["popularity"]}
             for a in dirty]
     arguments = [g for cp, g in ng.items() if g["app_id"] in dirty_set]
     command_vecs = [{"cmd_path": cp, "embedding": list(nv[cp])}

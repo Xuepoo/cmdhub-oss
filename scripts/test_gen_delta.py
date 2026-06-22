@@ -61,11 +61,14 @@ def _mk_full_db(tmp_path, name, apps, args, vecs):
     import sqlite_vec
     db = tmp_path / name
     c = sqlite3.connect(db); c.enable_load_extension(True); sqlite_vec.load(c)
-    c.execute("CREATE TABLE apps (app_id TEXT PRIMARY KEY, name TEXT, install_instructions TEXT)")
+    # Mirror the real apps schema (os_aliases + popularity) so gen_delta's _apps
+    # SELECT works and emitted DbApp rows carry every field the Rust client requires.
+    c.execute("CREATE TABLE apps (app_id TEXT PRIMARY KEY, name TEXT, os_aliases TEXT, install_instructions TEXT, popularity REAL DEFAULT 0.0)")
     c.execute("CREATE TABLE arguments (cmd_path TEXT, app_id TEXT, node_name TEXT, node_type TEXT, description TEXT, risk_level TEXT, example_template TEXT, docker_image TEXT, script_url TEXT, source_url TEXT)")
     c.execute("CREATE VIRTUAL TABLE commands_vec USING vec0(cmd_path TEXT PRIMARY KEY, embedding float[384])")
     for a in apps:
-        c.execute("INSERT INTO apps VALUES (?,?,?)", a)
+        # test inputs are (app_id, name, install_instructions) — os_aliases NULL, popularity 0.0
+        c.execute("INSERT INTO apps (app_id, name, install_instructions) VALUES (?,?,?)", a)
     for g in args:
         c.execute("INSERT INTO arguments (cmd_path,app_id,node_name,node_type,description,risk_level,example_template,docker_image,script_url,source_url) VALUES (?,?,?,?,?,?,?,?,?,?)", g)
     for cp, vec in vecs:
@@ -91,6 +94,10 @@ def test_diff_payload(tmp_path):
     payload = gd.diff(prev, new)
     assert payload["deleted_apps"] == ["a.del"]
     assert {a["app_id"] for a in payload["apps"]} == {"a.keep", "a.new"}  # keep changed, new added
+    # every emitted app must carry the full DbApp shape the Rust client deserializes
+    # (popularity is a required non-Option field — its absence broke a real delta apply)
+    for a in payload["apps"]:
+        assert set(a) == {"app_id", "name", "os_aliases", "install_instructions", "popularity"}
     cps = {g["cmd_path"] for g in payload["arguments"]}
     assert cps == {"keep", "fresh"}                  # changed + new args
     vc = {x["cmd_path"]: x["embedding"] for x in payload["command_vecs"]}
