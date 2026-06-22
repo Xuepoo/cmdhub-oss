@@ -36,10 +36,11 @@ pub async fn update_database(config: &Config, force: bool) -> Result<()> {
 
     // delta=v2 signals this CLI applies float32[384] deltas correctly. The Worker
     // serves mode:full to any request lacking it, so old CLIs never get a delta
-    // (which would corrupt their vec table).
+    // (which would corrupt their vec table). update_url is separate from api_url
+    // (which drives auth) so the manifest endpoint can point at the Worker host.
     let update_url = format!(
         "{}/db/update?last_sync_time={}&delta=v2",
-        config.api_url, last_sync_time
+        config.update_url, last_sync_time
     );
 
     eprintln!("Checking for updates at {}...", update_url);

@@ -13,6 +13,14 @@ pub struct VectorConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub api_url: String,
+    // Endpoint for `cmdh update` (the manifest decision: full/incremental/noop).
+    // Kept separate from api_url because api_url also drives OAuth (auth.rs). Default
+    // is cdn today; to enable delta downloads, point this at the standalone Worker
+    // host (e.g. https://update.cmdhub.org) — cdn.cmdhub.org is an R2 custom domain
+    // that intercepts /db/update before any Worker route can. See
+    // docs/superpowers/specs/2026-06-21-incremental-update-pipeline-design.md.
+    #[serde(default = "default_update_url")]
+    pub update_url: String,
     pub public_key: String,
     pub timeout_seconds: u64,
     #[serde(default = "default_risk_guard_level")]
@@ -37,6 +45,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             api_url: "https://cdn.cmdhub.org".to_string(),
+            update_url: default_update_url(),
             public_key: OFFICIAL_PUBLIC_KEY
                 .iter()
                 .map(|b| format!("{:02x}", b))
@@ -131,6 +140,11 @@ pub fn load_or_create_config(custom_path: Option<PathBuf>) -> Result<Config> {
                 config.api_url = api_url;
             }
         }
+        if let Ok(update_url) = std::env::var("CMDH_UPDATE_URL") {
+            if !update_url.is_empty() {
+                config.update_url = update_url;
+            }
+        }
         if let Ok(model_url) = std::env::var("CMDH_MODEL_URL") {
             if !model_url.is_empty() {
                 config.vector.model_url = Some(model_url);
@@ -161,6 +175,12 @@ fn default_output_mode() -> String {
 
 fn default_risk_guard_level() -> String {
     "ask".to_string()
+}
+
+fn default_update_url() -> String {
+    // cdn today (R2 static manifest = always full, safe). Switch to the Worker host
+    // (https://update.cmdhub.org) at the release that enables delta downloads.
+    "https://cdn.cmdhub.org".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -201,6 +221,8 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.risk_guard_level, "ask");
+        // update_url absent in the TOML -> serde default (back-compat for old configs).
+        assert_eq!(config.update_url, "https://cdn.cmdhub.org");
         assert_eq!(config.output.mode, "full");
         assert_eq!(config.install.os, None);
         assert_eq!(
@@ -212,5 +234,20 @@ mod tests {
                 "go".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn test_update_url_independent_of_api_url() {
+        // update_url drives `cmdh update`; api_url drives auth (auth.rs) — separate
+        // so the manifest endpoint can point at the Worker host without moving auth.
+        let toml_str = r#"
+            api_url = "https://api.cmdhub.org"
+            update_url = "https://update.cmdhub.org"
+            public_key = "01020304"
+            timeout_seconds = 30
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.api_url, "https://api.cmdhub.org");
+        assert_eq!(config.update_url, "https://update.cmdhub.org");
     }
 }
