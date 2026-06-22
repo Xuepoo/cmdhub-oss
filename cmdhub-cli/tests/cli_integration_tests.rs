@@ -819,7 +819,10 @@ async fn test_client_incremental_sync_deletions_and_updates() {
     });
 
     let config = cmdhub_cli::config::Config {
-        api_url: server_url,
+        api_url: server_url.clone(),
+        // update_database now reads update_url (decoupled from api_url); point it at
+        // the mock server too, else it would hit the real cdn and fail.
+        update_url: server_url,
         public_key: pub_key_hex,
         timeout_seconds: 5,
         ..Default::default()
