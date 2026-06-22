@@ -146,7 +146,9 @@ pub async fn run() -> Result<()> {
             .collect();
         let config_content = format!(
             r#"# CmdHub configuration file
-api_url = "https://cdn.cmdhub.org"
+# api_url = cloud API (auth login/token, search/public). update_url = manifest Worker.
+api_url = "https://api.cmdhub.org"
+update_url = "https://update.cmdhub.org"
 public_key = "{default_key}"
 timeout_seconds = 30
 
