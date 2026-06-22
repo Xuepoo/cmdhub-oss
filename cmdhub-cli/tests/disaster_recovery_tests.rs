@@ -149,8 +149,8 @@ fn test_recovery_from_db_corruption() {
     // Write config pointing to mock server and using test pub key
     let config_path = data_dir.join("cmdhub/config.toml");
     let config_content = format!(
-        "api_url = \"{}\"\npublic_key = \"{}\"\ntimeout_seconds = 5\n",
-        server_url, pub_key_hex
+        "api_url = \"{}\"\nupdate_url = \"{}\"\npublic_key = \"{}\"\ntimeout_seconds = 5\n",
+        server_url, server_url, pub_key_hex
     );
     fs::write(&config_path, config_content).unwrap();
 
@@ -261,8 +261,8 @@ fn test_update_invalid_signature_gating() {
 
     let config_path = data_dir.join("cmdhub/config.toml");
     let config_content = format!(
-        "api_url = \"{}\"\npublic_key = \"{}\"\ntimeout_seconds = 5\n",
-        server_url, pub_key_hex
+        "api_url = \"{}\"\nupdate_url = \"{}\"\npublic_key = \"{}\"\ntimeout_seconds = 5\n",
+        server_url, server_url, pub_key_hex
     );
     fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     fs::write(&config_path, config_content).unwrap();
@@ -399,8 +399,8 @@ fn test_update_incremental_mid_download_rollback() {
 
     let config_path = data_dir.join("cmdhub/config.toml");
     let config_content = format!(
-        "api_url = \"{}\"\npublic_key = \"{}\"\ntimeout_seconds = 5\n",
-        server_url, pub_key_hex
+        "api_url = \"{}\"\nupdate_url = \"{}\"\npublic_key = \"{}\"\ntimeout_seconds = 5\n",
+        server_url, server_url, pub_key_hex
     );
     fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     fs::write(&config_path, config_content).unwrap();
