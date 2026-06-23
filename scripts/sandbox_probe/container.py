@@ -106,17 +106,18 @@ def probe(
 
 
 def clear_cache() -> None:
-    """Bound disk between batches. `image prune -f` only removes DANGLING (untagged)
-    images — the per-tool `probe-int:<name>` images are TAGGED, so they survive it and
-    pile up (~1.2 GB each). Use `image prune -af` to also drop unused tagged images,
-    and explicitly rmi any remaining probe-int by reference as a backstop."""
+    """Bound disk between batches. ONLY removes straggler probe-int images (by tag
+    reference) + DANGLING layers (`image prune -f`). MUST NOT use `prune -af`: that
+    deletes the unreferenced BASE_IMAGE between batches too, after which every install
+    fails (`pull access denied`) and the whole run silently mass-fails. The per-tool
+    finally already rmi's each probe-int; this is the backstop."""
     _run(
         [
             "bash",
             "-c",
-            f"{ENGINE} image prune -af 2>/dev/null; "
             f"for i in $({ENGINE} images -q --filter reference='probe-int' 2>/dev/null); "
-            f"do {ENGINE} rmi -f $i 2>/dev/null; done",
+            f"do {ENGINE} rmi -f $i 2>/dev/null; done; "
+            f"{ENGINE} image prune -f 2>/dev/null",  # -f only: dangling, never tagged base
         ],
         timeout=300,
     )
