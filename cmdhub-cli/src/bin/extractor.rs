@@ -89,9 +89,12 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
     )?;
 
     let mut visited = HashSet::new();
-    let mut pending = vec![(vec![], NodeType::Root)];
+    // Each pending entry carries its PARENT's help text so we can detect a node whose
+    // own --help is just an alias of the parent's (no real subtree) and stop recursing.
+    let mut pending: Vec<(Vec<String>, NodeType, Option<String>)> =
+        vec![(vec![], NodeType::Root, None)];
 
-    while let Some((sub_path, node_type)) = pending.pop() {
+    while let Some((sub_path, node_type, parent_help)) = pending.pop() {
         if sub_path.len() > 3 {
             continue; // Force maximum depth 3 to avoid infinite loops
         }
@@ -194,8 +197,11 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
         insert_contract(conn, &contract)?;
         println!("Baked ACI Contract: {}", cmd_path);
 
-        // Discover next subcommands inside help text if depth is < 3
-        if sub_path.len() < 2 {
+        // Discover next subcommands inside help text if depth is < 3 — but NOT if this
+        // node's help merely echoes its parent's (e.g. `systemctl enable --help` ==
+        // `systemctl --help`): recursing there re-lists every sibling and explodes the
+        // tree. Such a node stays a valid leaf; we just don't descend into it.
+        if sub_path.len() < 2 && !help_is_alias_of_parent(&help_output, parent_help.as_deref()) {
             // Full command path so far (binary + sub_path) drives prefix-style parsing.
             let mut cmd_prefix = vec![target.name.clone()];
             cmd_prefix.extend(sub_path.iter().cloned());
@@ -203,7 +209,7 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
             for sub in discovered {
                 let mut next_path = sub_path.clone();
                 next_path.push(sub);
-                pending.push((next_path, NodeType::Sub));
+                pending.push((next_path, NodeType::Sub, Some(help_output.clone())));
             }
         }
     }
@@ -447,6 +453,14 @@ fn extract_description(help_text: &str, cmd_str: &str) -> String {
 ///
 /// `cmd_prefix` is the materialized command path so far (e.g. `["wrangler", "d1"]`);
 /// it drives the prefix-style extraction. Pass an empty slice to disable pass 1.
+/// True when a node's `--help` output is identical to its parent's — the signature of
+/// a tool that echoes the same global help for every subcommand (e.g. `systemctl
+/// enable --help` == `systemctl --help`). Such a node has no real subtree, so recursing
+/// into it would re-discover every sibling and explode the tree (89 subs -> 89x89).
+fn help_is_alias_of_parent(this_help: &str, parent_help: Option<&str>) -> bool {
+    parent_help == Some(this_help)
+}
+
 fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
     let mut subcommands = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -486,6 +500,11 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
     // multiple command sections (e.g. az's `Subgroups:` + `Commands:`) are all read
     // while non-command sections (`Options:` / `Flags:` / `Arguments:`) end the block.
     let mut in_section = false;
+    // Indent of the first entry in the current section. A command entry sits at this
+    // shallow indent; a wrapped description continuation ("  enable …,\n        based
+    // on preset") is indented to the description column (much deeper) — reject those so
+    // their first word ("based"/"ordered") isn't taken as a subcommand.
+    let mut section_indent: Option<usize> = None;
     for line in help_text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -496,9 +515,15 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
         if trimmed.ends_with(':') && !line.starts_with(' ') && !line.starts_with('\t') {
             let h = trimmed.trim_end_matches(':').to_lowercase();
             in_section = h.contains("command") || h.contains("subgroup");
+            section_indent = None; // new section -> re-establish the entry indent
             continue;
         }
         if in_section && (line.starts_with(' ') || line.starts_with('\t')) {
+            let indent = line.len() - line.trim_start().len();
+            let base = *section_indent.get_or_insert(indent);
+            if indent > base {
+                continue; // deeper than the entry column -> wrapped continuation line
+            }
             if let Some(first_raw) = line.split_whitespace().next() {
                 let first = first_raw.trim_end_matches(',').trim_end_matches(':');
                 // Skip lines that begin with the binary name — those are prefix-style
@@ -678,6 +703,39 @@ Global Arguments:
 ";
         let subs = parse_subcommands(az, &["az".to_string(), "storage".to_string()]);
         assert_eq!(subs, vec!["account", "blob", "message", "generate-sas"]);
+    }
+
+    #[test]
+    fn test_parse_subcommands_skips_wrapped_continuation_lines() {
+        // systemctl: command entries at a shallow indent, with descriptions that WRAP
+        // onto a deeply-indented continuation line. The continuation's first word
+        // ("ordered", "based") must NOT be mistaken for a subcommand.
+        let systemctl = "\
+Unit Commands:
+  list-units [PATTERN...]             List units currently in memory,
+                                      ordered by path
+  enable [UNIT...]                    Enable one or more units, possibly
+                                      based on preset configuration
+  daemon-reload                       Reload systemd manager configuration
+
+Options:
+  -h --help                           Show help
+";
+        let subs = parse_subcommands(systemctl, &["systemctl".to_string()]);
+        assert_eq!(subs, vec!["list-units", "enable", "daemon-reload"]);
+    }
+
+    #[test]
+    fn test_help_is_alias_of_parent() {
+        // A subcommand whose `--help` returns the SAME text as its parent (systemctl
+        // enable --help == systemctl --help) has no real subtree -> must not recurse.
+        let parent = "Unit Commands:\n  enable\n  disable\n";
+        assert!(help_is_alias_of_parent(parent, Some(parent)));
+        assert!(!help_is_alias_of_parent(
+            "different child help",
+            Some(parent)
+        ));
+        assert!(!help_is_alias_of_parent(parent, None)); // root has no parent
     }
 
     #[test]
