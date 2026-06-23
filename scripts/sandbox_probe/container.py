@@ -98,14 +98,19 @@ def probe(
 
 
 def clear_cache() -> None:
-    """Bound the 20 GB disk between batches."""
+    """Bound disk between batches. `image prune -f` only removes DANGLING (untagged)
+    images — the per-tool `probe-int:<name>` images are TAGGED, so they survive it and
+    pile up (~1.2 GB each). Use `image prune -af` to also drop unused tagged images,
+    and explicitly rmi any remaining probe-int by reference as a backstop."""
     _run(
         [
             "bash",
             "-c",
-            f"yes | sudo pacman -Scc 2>/dev/null; {ENGINE} image prune -f",
+            f"{ENGINE} image prune -af 2>/dev/null; "
+            f"for i in $({ENGINE} images -q --filter reference='probe-int' 2>/dev/null); "
+            f"do {ENGINE} rmi -f $i 2>/dev/null; done",
         ],
-        timeout=120,
+        timeout=300,
     )
 
 
