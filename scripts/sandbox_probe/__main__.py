@@ -12,7 +12,7 @@ if __name__ == "__main__":
     ap.add_argument(
         "--checkpoint", default=Path("/tmp/sandbox-probe/checkpoint.db"), type=Path
     )
-    ap.add_argument("--batch-size", type=int, default=300)
+    ap.add_argument("--batch-size", type=int, default=50)
     ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--min-pop", type=float, default=0.8)
     a = ap.parse_args()

@@ -67,34 +67,42 @@ def probe(
     --network none. The container is the isolation boundary; CMDH_NO_SANDBOX=1 tells
     the extractor not to nest another sandbox. Writes to the mounted scratch dir."""
     img = f"probe-int:{container_name}"
-    r = _run(
-        [
-            ENGINE,
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--memory",
-            "700m",
-            "-e",
-            "CMDH_NO_SANDBOX=1",
-            "-e",
-            "XDG_CONFIG_HOME=/probe/cfg",
-            "-e",
-            "XDG_DATA_HOME=/probe/data",
-            "-v",
-            f"{extractor_host_path}:/usr/local/bin/cmdh-extractor:ro",
-            "-v",
-            f"{targets_json}:/probe/cfg/cmdhub/targets.json:ro",
-            "-v",
-            f"{scratch_dir}:/probe/data",
-            img,
-            "/usr/local/bin/cmdh-extractor",
-        ],
-        timeout=probe_timeout,
-    )
-    _run([ENGINE, "rmi", "-f", img], timeout=60)
-    return r.returncode == 0
+    cname = f"probe-run-{container_name}"
+    try:
+        r = _run(
+            [
+                ENGINE,
+                "run",
+                "--name",
+                cname,
+                "--network",
+                "none",
+                "--memory",
+                "700m",
+                "-e",
+                "CMDH_NO_SANDBOX=1",
+                "-e",
+                "XDG_CONFIG_HOME=/probe/cfg",
+                "-e",
+                "XDG_DATA_HOME=/probe/data",
+                "-v",
+                f"{extractor_host_path}:/usr/local/bin/cmdh-extractor:ro",
+                "-v",
+                f"{targets_json}:/probe/cfg/cmdhub/targets.json:ro",
+                "-v",
+                f"{scratch_dir}:/probe/data",
+                img,
+                "/usr/local/bin/cmdh-extractor",
+            ],
+            timeout=probe_timeout,
+        )
+        return r.returncode == 0
+    finally:
+        # ALWAYS reclaim the probe container + the ~1.2GB committed image, even on
+        # timeout/exception. The earlier `--rm` + post-call rmi leaked the image when
+        # probe timed out (TimeoutExpired skipped the rmi) — the dominant disk leak.
+        _run([ENGINE, "rm", "-f", cname], timeout=30)
+        _run([ENGINE, "rmi", "-f", img], timeout=60)
 
 
 def clear_cache() -> None:
