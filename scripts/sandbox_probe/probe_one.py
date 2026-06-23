@@ -36,7 +36,12 @@ def probe_one(item: WorkItem, extractor: Path, work_root: Path) -> ProbeResult:
         if not container.probe(name, extractor, scratch, targets):
             return ProbeResult("failed", "timeout")
     except Exception:
-        container._run(["podman", "rm", "-f", name], timeout=30)
+        # Best-effort cleanup of a half-created container; must use the configured
+        # engine (not a hardcoded "podman") and never raise from the except path.
+        try:
+            container._run([container.ENGINE, "rm", "-f", name], timeout=30)
+        except Exception:
+            pass
         return ProbeResult("failed", "timeout")
 
     db = scratch / "cmdhub" / "cmdhub.db"
