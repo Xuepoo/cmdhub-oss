@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from . import container
 from .queue import WorkItem
@@ -13,7 +14,7 @@ from .queue import WorkItem
 class ProbeResult:
     status: str  # merged-candidate | no-subcommands | failed
     reason: str  # probe-ok | no-subcommands | install-fail | no-package | timeout
-    scratch_db: Path | None = None
+    scratch_db: Optional[Path] = None
 
 
 def probe_one(item: WorkItem, extractor: Path, work_root: Path) -> ProbeResult:

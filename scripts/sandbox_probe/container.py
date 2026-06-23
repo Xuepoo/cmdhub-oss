@@ -7,6 +7,7 @@ commit/rmi/images/prune verbs are identical across both."""
 import os
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 BASE_IMAGE = "arch-probe-base:latest"
 ENGINE = os.environ.get("CMDH_CONTAINER_ENGINE", "podman")
@@ -37,7 +38,7 @@ def install(pkg: str, container_name: str, install_timeout: int = 180) -> bool:
     return c.returncode == 0
 
 
-def resolve_pkg_in_container(binary: str, timeout: int = 60) -> str | None:
+def resolve_pkg_in_container(binary: str, timeout: int = 60) -> Optional[str]:
     """pkg-resolution fallback: ask `pacman -F` which package owns the binary."""
     r = _run(
         [
