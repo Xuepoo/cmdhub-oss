@@ -156,17 +156,9 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
         } else {
             format!("{} {}", target.name, sub_path.join(" "))
         };
-        // Prefer the node's own --help description. But when that help just echoes the
-        // parent's (systemctl enable --help == systemctl --help), the extracted line is
-        // the useless global synopsis — fall back to the description the parent's command
-        // list gave this entry ("Enable one or more units").
-        let description = if help_is_alias_of_parent(&help_output, parent_help.as_deref()) {
-            list_desc
-                .clone()
-                .unwrap_or_else(|| extract_description(&help_output, &cmd_str))
-        } else {
-            extract_description(&help_output, &cmd_str)
-        };
+        // Prefer the parent command-list one-liner (list_desc) for subcommands; root
+        // nodes (list_desc = None) extract from their own --help. See pick_description.
+        let description = pick_description(&help_output, &cmd_str, list_desc.clone());
 
         let risk_level = if cmd_path.contains("delete")
             || cmd_path.contains("remove")
@@ -478,6 +470,18 @@ fn help_is_alias_of_parent(this_help: &str, parent_help: Option<&str>) -> bool {
     parent_help == Some(this_help)
 }
 
+/// Choose a command's description. The parent command-list one-liner (`list_desc`,
+/// e.g. "Connect to Tailscale") is the canonical short description, so prefer it for a
+/// subcommand — the node's own --help is frequently an echo of the global help
+/// (systemctl), an error ("xray api --help: unknown command"), or a verbose usage
+/// block. Root nodes have no list_desc, so they extract from their own --help.
+fn pick_description(own_help: &str, cmd_str: &str, list_desc: Option<String>) -> String {
+    match list_desc {
+        Some(d) => d,
+        None => extract_description(own_help, cmd_str),
+    }
+}
+
 /// Extract the description that trails a command-list entry, after the subcommand
 /// token and any arg placeholders (`enable [UNIT...]   Enable one or more units` ->
 /// "Enable one or more units"). The desc starts at the first run of 2+ spaces, the
@@ -543,11 +547,25 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<(String, Opt
         if trimmed.is_empty() {
             continue;
         }
-        // Section headers, un-indented, in two forms: trailing colon ("Commands:",
-        // az "Subgroups:") or angle-bracketed ("<Commands>"/"<Switches>", 7-Zip style).
+        // Section headers, un-indented, in three forms: trailing colon ("Commands:",
+        // az "Subgroups:"), angle-bracketed ("<Commands>"/"<Switches>", 7-Zip), or an
+        // all-caps bare word ("SUBCOMMANDS"/"FLAGS", tailscale & many Go CLIs). The
+        // all-caps form requires every letter uppercase and <=3 words so it can't match
+        // a normal prose/usage line.
+        let is_all_caps_header = {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            !words.is_empty()
+                && words.len() <= 3
+                && trimmed.chars().any(|c| c.is_ascii_uppercase())
+                && trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c == ' ' || c == '-')
+        };
         let is_header = !line.starts_with(' ')
             && !line.starts_with('\t')
-            && (trimmed.ends_with(':') || (trimmed.starts_with('<') && trimmed.ends_with('>')));
+            && (trimmed.ends_with(':')
+                || (trimmed.starts_with('<') && trimmed.ends_with('>'))
+                || is_all_caps_header);
         if is_header {
             let h = trimmed
                 .trim_end_matches(':')
@@ -796,6 +814,32 @@ Options:
     }
 
     #[test]
+    fn test_parse_subcommands_uppercase_bare_header() {
+        // tailscale (and many Go CLIs): an all-caps bare section header "SUBCOMMANDS"
+        // (no colon, no angle brackets), then 2-space column-gutter entries.
+        let tailscale = "\
+USAGE
+  tailscale [flags] <command> [command flags]
+
+SUBCOMMANDS
+  up           Connect to Tailscale, logging in if needed
+  status       Show state of tailscaled and its connections
+  ping         Ping a host at the Tailscale layer
+
+FLAGS
+  --socket     path to tailscaled socket
+";
+        let subs = parse_subcommands(tailscale, &["tailscale".to_string()]);
+        let names: Vec<String> = subs.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, vec!["up", "status", "ping"]); // --socket under FLAGS excluded
+        let up = subs.iter().find(|(n, _)| n == "up").unwrap();
+        assert_eq!(
+            up.1.as_deref(),
+            Some("Connect to Tailscale, logging in if needed")
+        );
+    }
+
+    #[test]
     fn test_parse_subcommands_angle_bracket_headers() {
         // 7-Zip: section header is "<Commands>" (angle brackets, NO trailing colon),
         // entries are "  a : Add files to archive". "<Switches>" ends the command block.
@@ -841,6 +885,26 @@ Unit Commands:
         // the trailing comma where the real help wraps to a continuation line)
         let lu = subs.iter().find(|(n, _)| n == "list-units").unwrap();
         assert_eq!(lu.1.as_deref(), Some("List units currently in memory,"));
+    }
+
+    #[test]
+    fn test_pick_description_prefers_parent_list_desc() {
+        // The parent command-list one-liner is the canonical description. Prefer it for
+        // a subcommand over the node's own --help, which is often an echo (systemctl),
+        // an error (xray 'unknown command'), or a verbose usage block.
+        assert_eq!(
+            pick_description(
+                "xray api --help: unknown command",
+                "xray api",
+                Some("Call an API in an Xray process".to_string())
+            ),
+            "Call an API in an Xray process"
+        );
+        // No parent list desc (root node) -> delegates to own-help extraction.
+        assert_eq!(
+            pick_description("Frobnicate all the things\n\nUsage: foo ...", "foo", None),
+            "Frobnicate all the things"
+        );
     }
 
     #[test]
