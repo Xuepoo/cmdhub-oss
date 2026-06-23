@@ -100,3 +100,21 @@ def clear_cache() -> None:
         ],
         timeout=120,
     )
+
+
+def cleanup_orphans() -> None:
+    """Remove orphaned intermediate containers/images left by an interrupted run.
+    Each tool commits a ~1.2 GB `probe-int:<name>` image that probe() normally rmi's;
+    a killed run leaves them behind and fills the disk. Call once at startup (and it's
+    cheap to call between batches). Also removes any leftover `probe-int` containers."""
+    _run(
+        [
+            "bash",
+            "-c",
+            "podman rm -af 2>/dev/null; "
+            "for i in $(podman images -q --filter reference='probe-int' 2>/dev/null); "
+            "do podman rmi -f $i 2>/dev/null; done; "
+            "podman image prune -f 2>/dev/null",
+        ],
+        timeout=180,
+    )

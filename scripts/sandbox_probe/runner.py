@@ -47,6 +47,7 @@ def run(
     min_pop: float = 0.8,
 ) -> None:
     ck = Checkpoint(checkpoint_path)
+    container.cleanup_orphans()  # clear intermediate images left by any interrupted run
     todo = [
         it
         for it in load_workitems(str(master_db), min_pop)
