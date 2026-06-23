@@ -1,9 +1,15 @@
-"""Thin podman wrappers for the two-stage install-probe."""
+"""Thin container-engine wrappers for the two-stage install-probe.
 
+Engine is podman by default (local/VPS); set CMDH_CONTAINER_ENGINE=docker on hosts
+without podman (e.g. Amazon Linux 2023, which ships docker, not podman). The run/
+commit/rmi/images/prune verbs are identical across both."""
+
+import os
 import subprocess
 from pathlib import Path
 
 BASE_IMAGE = "arch-probe-base:latest"
+ENGINE = os.environ.get("CMDH_CONTAINER_ENGINE", "podman")
 
 
 def _run(args: list[str], timeout: int) -> subprocess.CompletedProcess:
@@ -18,16 +24,16 @@ def install(pkg: str, container_name: str, install_timeout: int = 180) -> bool:
         f"sudo pacman -S --noconfirm {pkg} || sudo -u builder yay -S --noconfirm {pkg}"
     )
     r = _run(
-        ["podman", "run", "--name", container_name, BASE_IMAGE, "bash", "-c", cmd],
+        [ENGINE, "run", "--name", container_name, BASE_IMAGE, "bash", "-c", cmd],
         timeout=install_timeout,
     )
     if r.returncode != 0:
-        _run(["podman", "rm", "-f", container_name], timeout=30)
+        _run([ENGINE, "rm", "-f", container_name], timeout=30)
         return False
     c = _run(
-        ["podman", "commit", container_name, f"probe-int:{container_name}"], timeout=60
+        [ENGINE, "commit", container_name, f"probe-int:{container_name}"], timeout=60
     )
-    _run(["podman", "rm", "-f", container_name], timeout=30)
+    _run([ENGINE, "rm", "-f", container_name], timeout=30)
     return c.returncode == 0
 
 
@@ -35,7 +41,7 @@ def resolve_pkg_in_container(binary: str, timeout: int = 60) -> str | None:
     """pkg-resolution fallback: ask `pacman -F` which package owns the binary."""
     r = _run(
         [
-            "podman",
+            ENGINE,
             "run",
             "--rm",
             BASE_IMAGE,
@@ -62,7 +68,7 @@ def probe(
     img = f"probe-int:{container_name}"
     r = _run(
         [
-            "podman",
+            ENGINE,
             "run",
             "--rm",
             "--network",
@@ -86,7 +92,7 @@ def probe(
         ],
         timeout=probe_timeout,
     )
-    _run(["podman", "rmi", "-f", img], timeout=60)
+    _run([ENGINE, "rmi", "-f", img], timeout=60)
     return r.returncode == 0
 
 
@@ -96,7 +102,7 @@ def clear_cache() -> None:
         [
             "bash",
             "-c",
-            "yes | sudo pacman -Scc 2>/dev/null; podman image prune -f",
+            f"yes | sudo pacman -Scc 2>/dev/null; {ENGINE} image prune -f",
         ],
         timeout=120,
     )
@@ -111,10 +117,10 @@ def cleanup_orphans() -> None:
         [
             "bash",
             "-c",
-            "podman rm -af 2>/dev/null; "
-            "for i in $(podman images -q --filter reference='probe-int' 2>/dev/null); "
-            "do podman rmi -f $i 2>/dev/null; done; "
-            "podman image prune -f 2>/dev/null",
+            f"{ENGINE} rm -f $({ENGINE} ps -aq) 2>/dev/null; "
+            f"for i in $({ENGINE} images -q --filter reference='probe-int' 2>/dev/null); "
+            f"do {ENGINE} rmi -f $i 2>/dev/null; done; "
+            f"{ENGINE} image prune -f 2>/dev/null",
         ],
         timeout=180,
     )
