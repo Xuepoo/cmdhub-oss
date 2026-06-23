@@ -1,0 +1,18 @@
+# Containerfile.arch-probe-base — base for install-probe. Built once, pinned.
+FROM archlinux:latest
+
+# Sync repos + the FILE database (needed for `pacman -F <binary>` pkg-resolution fallback).
+RUN pacman -Syu --noconfirm && pacman -Fy --noconfirm && \
+    pacman -S --noconfirm base-devel git sudo
+
+# yay/makepkg refuse to run as root -> create an unprivileged build user with passwordless sudo.
+RUN useradd -m builder && \
+    echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+# Install yay (AUR helper) as the build user.
+USER builder
+WORKDIR /home/builder
+RUN git clone https://aur.archlinux.org/yay-bin.git && \
+    cd yay-bin && makepkg -si --noconfirm && cd .. && rm -rf yay-bin
+
+USER root
