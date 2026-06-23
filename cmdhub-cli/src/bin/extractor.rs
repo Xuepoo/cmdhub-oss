@@ -543,10 +543,17 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<(String, Opt
         if trimmed.is_empty() {
             continue;
         }
-        // Header lines end with ':' and aren't indented entries (an entry like
-        // "name : desc" is indented, so the leading-space check excludes it).
-        if trimmed.ends_with(':') && !line.starts_with(' ') && !line.starts_with('\t') {
-            let h = trimmed.trim_end_matches(':').to_lowercase();
+        // Section headers, un-indented, in two forms: trailing colon ("Commands:",
+        // az "Subgroups:") or angle-bracketed ("<Commands>"/"<Switches>", 7-Zip style).
+        let is_header = !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && (trimmed.ends_with(':') || (trimmed.starts_with('<') && trimmed.ends_with('>')));
+        if is_header {
+            let h = trimmed
+                .trim_end_matches(':')
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_lowercase();
             in_section = h.contains("command") || h.contains("subgroup");
             section_indent = None; // new section -> re-establish the entry indent
             continue;
@@ -567,16 +574,22 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<(String, Opt
                     .unwrap_or(false);
                 if !is_prefix_line {
                     let entry = line.trim_start();
-                    let after = entry[entry.find(first).map(|i| i + first.len()).unwrap_or(0)..]
-                        .trim_end_matches(',')
-                        .trim_end_matches(':')
-                        .to_string();
-                    // az style "name : desc" -> strip the leading " : " separator
-                    let after = after
-                        .strip_prefix(" :")
-                        .map(|s| s.to_string())
-                        .unwrap_or(after);
-                    push(first, entry_description(&after), &mut subcommands);
+                    let after = &entry[entry.find(first).map(|i| i + first.len()).unwrap_or(0)..];
+                    // Two entry shapes: colon-separated ("a : Add files", "name :
+                    // desc") -> everything after " :" is the description; or
+                    // column-gutter ("enable [UNIT...]   Enable …") -> desc starts at
+                    // the first 2-space run (entry_description).
+                    let desc = if let Some(rest) = after.trim_start().strip_prefix(": ") {
+                        let d = rest.trim();
+                        (!d.is_empty()).then(|| d.to_string())
+                    } else if let Some(rest) = after.strip_prefix(" :") {
+                        // "name [Preview] : desc" — colon not immediately after name
+                        let d = rest.trim();
+                        (!d.is_empty()).then(|| d.to_string())
+                    } else {
+                        entry_description(after)
+                    };
+                    push(first, desc, &mut subcommands);
                 }
             }
         }
@@ -783,6 +796,28 @@ Options:
     }
 
     #[test]
+    fn test_parse_subcommands_angle_bracket_headers() {
+        // 7-Zip: section header is "<Commands>" (angle brackets, NO trailing colon),
+        // entries are "  a : Add files to archive". "<Switches>" ends the command block.
+        let sevenzip = "\
+Usage: 7z <command> [<switches>...] <archive_name>
+
+<Commands>
+  a : Add files to archive
+  d : Delete files from archive
+  x : eXtract files with full paths
+
+<Switches>
+  -t : Set type of archive
+";
+        let subs = parse_subcommands(sevenzip, &["7z".to_string()]);
+        let names: Vec<String> = subs.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, vec!["a", "d", "x"]); // -t under <Switches> excluded
+        let a = subs.iter().find(|(n, _)| n == "a").unwrap();
+        assert_eq!(a.1.as_deref(), Some("Add files to archive"));
+    }
+
+    #[test]
     fn test_parse_subcommands_captures_inline_descriptions() {
         // Each command-list entry's trailing text is its description — captured so a
         // subcommand whose own --help only echoes the global help (systemctl) still
@@ -802,9 +837,10 @@ Unit Commands:
             dr.1.as_deref(),
             Some("Reload systemd manager configuration")
         );
-        // entry with a [PATTERN...] arg token before the description; trailing comma trimmed
+        // entry with a [PATTERN...] arg token before the description (verbatim, incl.
+        // the trailing comma where the real help wraps to a continuation line)
         let lu = subs.iter().find(|(n, _)| n == "list-units").unwrap();
-        assert_eq!(lu.1.as_deref(), Some("List units currently in memory"));
+        assert_eq!(lu.1.as_deref(), Some("List units currently in memory,"));
     }
 
     #[test]
