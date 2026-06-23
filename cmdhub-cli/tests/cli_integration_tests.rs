@@ -21,7 +21,7 @@ fn test_config_resolution() {
 
     // Load or create config (should create it)
     let config = load_or_create_config(None).unwrap();
-    assert_eq!(config.api_url, "https://cdn.cmdhub.org");
+    assert_eq!(config.api_url, "https://api.cmdhub.org");
     assert_eq!(config.timeout_seconds, 30);
 
     // Verify it exists in config path
@@ -49,7 +49,7 @@ fn test_config_env_override() {
 
     // Now loading should succeed
     let config = load_or_create_config(None).unwrap();
-    assert_eq!(config.api_url, "https://cdn.cmdhub.org");
+    assert_eq!(config.api_url, "https://api.cmdhub.org");
 
     // Verify it exists at the exact CMDH_CONFIG path
     let expected_path = resolve_config_path(None);
@@ -77,7 +77,7 @@ fn test_config_custom_path_override() {
 
     // Now loading with custom path should succeed
     let config = load_or_create_config(Some(custom_path.clone())).unwrap();
-    assert_eq!(config.api_url, "https://cdn.cmdhub.org");
+    assert_eq!(config.api_url, "https://api.cmdhub.org");
 
     // Verify it exists at the exact custom path
     let expected_path = resolve_config_path(Some(custom_path.clone()));

@@ -44,7 +44,10 @@ pub const OFFICIAL_PUBLIC_KEY: [u8; 32] = [
 impl Default for Config {
     fn default() -> Self {
         Self {
-            api_url: "https://cdn.cmdhub.org".to_string(),
+            // The cloud API: OAuth login/token/logout + search/public live here. NOT
+            // the cdn (an R2 static bucket with no /auth route — login there 404s).
+            // `cmdh update` uses the separate update_url (Worker), not api_url.
+            api_url: "https://api.cmdhub.org".to_string(),
             update_url: default_update_url(),
             public_key: OFFICIAL_PUBLIC_KEY
                 .iter()
