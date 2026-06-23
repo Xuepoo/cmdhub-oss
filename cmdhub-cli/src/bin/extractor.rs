@@ -89,9 +89,14 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
     )?;
 
     let mut visited = HashSet::new();
-    let mut pending = vec![(vec![], NodeType::Root)];
+    // Each pending entry carries (1) its PARENT's help text — to detect a node whose own
+    // --help just echoes the parent's (no real subtree) — and (2) the description that
+    // trailed this node in the parent's command list, used when the node's own help is
+    // that useless global echo.
+    let mut pending: Vec<(Vec<String>, NodeType, Option<String>, Option<String>)> =
+        vec![(vec![], NodeType::Root, None, None)];
 
-    while let Some((sub_path, node_type)) = pending.pop() {
+    while let Some((sub_path, node_type, parent_help, list_desc)) = pending.pop() {
         if sub_path.len() > 3 {
             continue; // Force maximum depth 3 to avoid infinite loops
         }
@@ -151,7 +156,17 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
         } else {
             format!("{} {}", target.name, sub_path.join(" "))
         };
-        let description = extract_description(&help_output, &cmd_str);
+        // Prefer the node's own --help description. But when that help just echoes the
+        // parent's (systemctl enable --help == systemctl --help), the extracted line is
+        // the useless global synopsis — fall back to the description the parent's command
+        // list gave this entry ("Enable one or more units").
+        let description = if help_is_alias_of_parent(&help_output, parent_help.as_deref()) {
+            list_desc
+                .clone()
+                .unwrap_or_else(|| extract_description(&help_output, &cmd_str))
+        } else {
+            extract_description(&help_output, &cmd_str)
+        };
 
         let risk_level = if cmd_path.contains("delete")
             || cmd_path.contains("remove")
@@ -194,16 +209,24 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
         insert_contract(conn, &contract)?;
         println!("Baked ACI Contract: {}", cmd_path);
 
-        // Discover next subcommands inside help text if depth is < 3
-        if sub_path.len() < 2 {
+        // Discover next subcommands inside help text if depth is < 3 — but NOT if this
+        // node's help merely echoes its parent's (e.g. `systemctl enable --help` ==
+        // `systemctl --help`): recursing there re-lists every sibling and explodes the
+        // tree. Such a node stays a valid leaf; we just don't descend into it.
+        if sub_path.len() < 2 && !help_is_alias_of_parent(&help_output, parent_help.as_deref()) {
             // Full command path so far (binary + sub_path) drives prefix-style parsing.
             let mut cmd_prefix = vec![target.name.clone()];
             cmd_prefix.extend(sub_path.iter().cloned());
             let discovered = parse_subcommands(&help_output, &cmd_prefix);
-            for sub in discovered {
+            for (sub, sub_desc) in discovered {
                 let mut next_path = sub_path.clone();
                 next_path.push(sub);
-                pending.push((next_path, NodeType::Sub));
+                pending.push((
+                    next_path,
+                    NodeType::Sub,
+                    Some(help_output.clone()),
+                    sub_desc,
+                ));
             }
         }
     }
@@ -447,8 +470,30 @@ fn extract_description(help_text: &str, cmd_str: &str) -> String {
 ///
 /// `cmd_prefix` is the materialized command path so far (e.g. `["wrangler", "d1"]`);
 /// it drives the prefix-style extraction. Pass an empty slice to disable pass 1.
-fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
-    let mut subcommands = Vec::new();
+/// True when a node's `--help` output is identical to its parent's — the signature of
+/// a tool that echoes the same global help for every subcommand (e.g. `systemctl
+/// enable --help` == `systemctl --help`). Such a node has no real subtree, so recursing
+/// into it would re-discover every sibling and explode the tree (89 subs -> 89x89).
+fn help_is_alias_of_parent(this_help: &str, parent_help: Option<&str>) -> bool {
+    parent_help == Some(this_help)
+}
+
+/// Extract the description that trails a command-list entry, after the subcommand
+/// token and any arg placeholders (`enable [UNIT...]   Enable one or more units` ->
+/// "Enable one or more units"). The desc starts at the first run of 2+ spaces, the
+/// column gutter help formats use to separate name+args from prose.
+fn entry_description(rest_after_name: &str) -> Option<String> {
+    let idx = rest_after_name.find("  ")?;
+    let desc = rest_after_name[idx..].trim();
+    if desc.is_empty() {
+        None
+    } else {
+        Some(desc.to_string())
+    }
+}
+
+fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<(String, Option<String>)> {
+    let mut subcommands: Vec<(String, Option<String>)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     let valid = |w: &str| -> bool {
@@ -459,9 +504,9 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
             && w != "See"
             && w != "EXPERIMENTAL"
     };
-    let mut push = |w: &str, out: &mut Vec<String>| {
+    let mut push = |w: &str, desc: Option<String>, out: &mut Vec<(String, Option<String>)>| {
         if valid(w) && seen.insert(w.to_string()) {
-            out.push(w.to_string());
+            out.push((w.to_string(), desc));
         }
     };
 
@@ -476,7 +521,9 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
             if let Some(rest) = line.trim_start().strip_prefix(&prefix) {
                 if let Some(tok) = rest.split_whitespace().next() {
                     let tok = tok.trim_end_matches(',').trim_end_matches(':');
-                    push(tok, &mut subcommands);
+                    let after =
+                        rest[rest.find(tok).map(|i| i + tok.len()).unwrap_or(0)..].to_string();
+                    push(tok, entry_description(&after), &mut subcommands);
                 }
             }
         }
@@ -486,19 +533,37 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
     // multiple command sections (e.g. az's `Subgroups:` + `Commands:`) are all read
     // while non-command sections (`Options:` / `Flags:` / `Arguments:`) end the block.
     let mut in_section = false;
+    // Indent of the first entry in the current section. A command entry sits at this
+    // shallow indent; a wrapped description continuation ("  enable …,\n        based
+    // on preset") is indented to the description column (much deeper) — reject those so
+    // their first word ("based"/"ordered") isn't taken as a subcommand.
+    let mut section_indent: Option<usize> = None;
     for line in help_text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        // Header lines end with ':' and aren't indented entries (an entry like
-        // "name : desc" is indented, so the leading-space check excludes it).
-        if trimmed.ends_with(':') && !line.starts_with(' ') && !line.starts_with('\t') {
-            let h = trimmed.trim_end_matches(':').to_lowercase();
+        // Section headers, un-indented, in two forms: trailing colon ("Commands:",
+        // az "Subgroups:") or angle-bracketed ("<Commands>"/"<Switches>", 7-Zip style).
+        let is_header = !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && (trimmed.ends_with(':') || (trimmed.starts_with('<') && trimmed.ends_with('>')));
+        if is_header {
+            let h = trimmed
+                .trim_end_matches(':')
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_lowercase();
             in_section = h.contains("command") || h.contains("subgroup");
+            section_indent = None; // new section -> re-establish the entry indent
             continue;
         }
         if in_section && (line.starts_with(' ') || line.starts_with('\t')) {
+            let indent = line.len() - line.trim_start().len();
+            let base = *section_indent.get_or_insert(indent);
+            if indent > base {
+                continue; // deeper than the entry column -> wrapped continuation line
+            }
             if let Some(first_raw) = line.split_whitespace().next() {
                 let first = first_raw.trim_end_matches(',').trim_end_matches(':');
                 // Skip lines that begin with the binary name — those are prefix-style
@@ -508,7 +573,23 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<String> {
                     .map(|b| first == b.as_str())
                     .unwrap_or(false);
                 if !is_prefix_line {
-                    push(first, &mut subcommands);
+                    let entry = line.trim_start();
+                    let after = &entry[entry.find(first).map(|i| i + first.len()).unwrap_or(0)..];
+                    // Two entry shapes: colon-separated ("a : Add files", "name :
+                    // desc") -> everything after " :" is the description; or
+                    // column-gutter ("enable [UNIT...]   Enable …") -> desc starts at
+                    // the first 2-space run (entry_description).
+                    let desc = if let Some(rest) = after.trim_start().strip_prefix(": ") {
+                        let d = rest.trim();
+                        (!d.is_empty()).then(|| d.to_string())
+                    } else if let Some(rest) = after.strip_prefix(" :") {
+                        // "name [Preview] : desc" — colon not immediately after name
+                        let d = rest.trim();
+                        (!d.is_empty()).then(|| d.to_string())
+                    } else {
+                        entry_description(after)
+                    };
+                    push(first, desc, &mut subcommands);
                 }
             }
         }
@@ -573,6 +654,11 @@ fn insert_contract(conn: &rusqlite::Connection, contract: &AciCommandContract) -
 mod tests {
     use super::*;
 
+    /// Test helper: drop descriptions, keep just the subcommand names for assertions.
+    fn names(subs: Vec<(String, Option<String>)>) -> Vec<String> {
+        subs.into_iter().map(|(n, _)| n).collect()
+    }
+
     #[test]
     fn test_parse_subcommands_various_formats() {
         let help_text_git = "\
@@ -588,7 +674,7 @@ Commands:
 Options:
   -v, --version  Show version
 ";
-        let subcommands = parse_subcommands(help_text_git, &[]);
+        let subcommands = names(parse_subcommands(help_text_git, &[]));
         assert_eq!(subcommands, vec!["clone", "init", "add"]);
 
         let help_text_subcommands = "\
@@ -601,7 +687,7 @@ Subcommands:
 Flags:
   -h, --help  Help
 ";
-        let subcommands_2 = parse_subcommands(help_text_subcommands, &[]);
+        let subcommands_2 = names(parse_subcommands(help_text_subcommands, &[]));
         assert_eq!(subcommands_2, vec!["create", "delete"]);
 
         // Verify it stops parsing on next header like "Options:" or "Flags:"
@@ -612,7 +698,7 @@ Commands:
 Options:
   commit     This should not be parsed as a subcommand because it is under Options
 ";
-        let subcommands_3 = parse_subcommands(help_text_stop, &[]);
+        let subcommands_3 = names(parse_subcommands(help_text_stop, &[]));
         assert_eq!(subcommands_3, vec!["status"]);
     }
 
@@ -636,7 +722,7 @@ STORAGE
 GLOBAL FLAGS
   -c, --config          Path to config  [string]
 ";
-        let subs = parse_subcommands(top, &["wrangler".to_string()]);
+        let subs = names(parse_subcommands(top, &["wrangler".to_string()]));
         assert_eq!(subs, vec!["docs", "email", "login", "d1", "r2"]);
 
         // Nested: `wrangler d1 --help` repeats the full path "wrangler d1 <sub>".
@@ -654,7 +740,10 @@ COMMANDS
 GLOBAL FLAGS
   -h, --help            Show help  [boolean]
 ";
-        let subs = parse_subcommands(d1, &["wrangler".to_string(), "d1".to_string()]);
+        let subs = names(parse_subcommands(
+            d1,
+            &["wrangler".to_string(), "d1".to_string()],
+        ));
         assert_eq!(subs, vec!["create", "list", "delete", "time-travel"]);
     }
 
@@ -676,8 +765,95 @@ Commands:
 Global Arguments:
     --debug                  : Increase logging verbosity.
 ";
-        let subs = parse_subcommands(az, &["az".to_string(), "storage".to_string()]);
+        let subs = names(parse_subcommands(
+            az,
+            &["az".to_string(), "storage".to_string()],
+        ));
         assert_eq!(subs, vec!["account", "blob", "message", "generate-sas"]);
+    }
+
+    #[test]
+    fn test_parse_subcommands_skips_wrapped_continuation_lines() {
+        // systemctl: command entries at a shallow indent, with descriptions that WRAP
+        // onto a deeply-indented continuation line. The continuation's first word
+        // ("ordered", "based") must NOT be mistaken for a subcommand.
+        let systemctl = "\
+Unit Commands:
+  list-units [PATTERN...]             List units currently in memory,
+                                      ordered by path
+  enable [UNIT...]                    Enable one or more units, possibly
+                                      based on preset configuration
+  daemon-reload                       Reload systemd manager configuration
+
+Options:
+  -h --help                           Show help
+";
+        let subs: Vec<String> = parse_subcommands(systemctl, &["systemctl".to_string()])
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(subs, vec!["list-units", "enable", "daemon-reload"]);
+    }
+
+    #[test]
+    fn test_parse_subcommands_angle_bracket_headers() {
+        // 7-Zip: section header is "<Commands>" (angle brackets, NO trailing colon),
+        // entries are "  a : Add files to archive". "<Switches>" ends the command block.
+        let sevenzip = "\
+Usage: 7z <command> [<switches>...] <archive_name>
+
+<Commands>
+  a : Add files to archive
+  d : Delete files from archive
+  x : eXtract files with full paths
+
+<Switches>
+  -t : Set type of archive
+";
+        let subs = parse_subcommands(sevenzip, &["7z".to_string()]);
+        let names: Vec<String> = subs.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, vec!["a", "d", "x"]); // -t under <Switches> excluded
+        let a = subs.iter().find(|(n, _)| n == "a").unwrap();
+        assert_eq!(a.1.as_deref(), Some("Add files to archive"));
+    }
+
+    #[test]
+    fn test_parse_subcommands_captures_inline_descriptions() {
+        // Each command-list entry's trailing text is its description — captured so a
+        // subcommand whose own --help only echoes the global help (systemctl) still
+        // gets a real description from the parent's list.
+        let systemctl = "\
+Unit Commands:
+  list-units [PATTERN...]             List units currently in memory,
+                                      ordered by path
+  enable [UNIT...]                    Enable one or more units
+  daemon-reload                       Reload systemd manager configuration
+";
+        let subs = parse_subcommands(systemctl, &["systemctl".to_string()]);
+        let enable = subs.iter().find(|(n, _)| n == "enable").unwrap();
+        assert_eq!(enable.1.as_deref(), Some("Enable one or more units"));
+        let dr = subs.iter().find(|(n, _)| n == "daemon-reload").unwrap();
+        assert_eq!(
+            dr.1.as_deref(),
+            Some("Reload systemd manager configuration")
+        );
+        // entry with a [PATTERN...] arg token before the description (verbatim, incl.
+        // the trailing comma where the real help wraps to a continuation line)
+        let lu = subs.iter().find(|(n, _)| n == "list-units").unwrap();
+        assert_eq!(lu.1.as_deref(), Some("List units currently in memory,"));
+    }
+
+    #[test]
+    fn test_help_is_alias_of_parent() {
+        // A subcommand whose `--help` returns the SAME text as its parent (systemctl
+        // enable --help == systemctl --help) has no real subtree -> must not recurse.
+        let parent = "Unit Commands:\n  enable\n  disable\n";
+        assert!(help_is_alias_of_parent(parent, Some(parent)));
+        assert!(!help_is_alias_of_parent(
+            "different child help",
+            Some(parent)
+        ));
+        assert!(!help_is_alias_of_parent(parent, None)); // root has no parent
     }
 
     #[test]
