@@ -506,7 +506,12 @@ fn pick_description(own_help: &str, cmd_str: &str, list_desc: Option<String>) ->
 /// column gutter help formats use to separate name+args from prose.
 fn entry_description(rest_after_name: &str) -> Option<String> {
     let idx = rest_after_name.find("  ")?;
-    let desc = rest_after_name[idx..].trim();
+    // Strip a leading separator glyph some tools use between name+args and the prose:
+    // hyprctl uses "→" ("activewindow   → Gets the active window..."), others "-"/":".
+    let desc = rest_after_name[idx..]
+        .trim()
+        .trim_start_matches(['→', '-', ':'])
+        .trim();
     if desc.is_empty() {
         None
     } else {
@@ -923,6 +928,24 @@ Unit Commands:
             pick_description("Frobnicate all the things\n\nUsage: foo ...", "foo", None),
             "Frobnicate all the things"
         );
+    }
+
+    #[test]
+    fn test_parse_subcommands_arrow_separator() {
+        // hyprctl: "  name        → description" with an arrow glyph separator.
+        let hyprctl = "\
+usage: hyprctl [flags] <command>
+
+commands:
+    activewindow        → Gets the active window name and its properties
+    binds               → Lists all registered binds
+    monitors            → Lists active outputs with their properties
+";
+        let subs = parse_subcommands(hyprctl, &["hyprctl".to_string()]);
+        let aw = subs.iter().find(|(n, _)| n == "activewindow").unwrap();
+        assert_eq!(aw.1.as_deref(), Some("Gets the active window name and its properties"));
+        let names: Vec<String> = subs.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, vec!["activewindow", "binds", "monitors"]);
     }
 
     #[test]
