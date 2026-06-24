@@ -943,16 +943,25 @@ commands:
 ";
         let subs = parse_subcommands(hyprctl, &["hyprctl".to_string()]);
         let aw = subs.iter().find(|(n, _)| n == "activewindow").unwrap();
-        assert_eq!(aw.1.as_deref(), Some("Gets the active window name and its properties"));
+        assert_eq!(
+            aw.1.as_deref(),
+            Some("Gets the active window name and its properties")
+        );
         let names: Vec<String> = subs.iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(names, vec!["activewindow", "binds", "monitors"]);
     }
 
     #[test]
     fn test_help_is_unknown_command() {
-        assert!(help_is_unknown_command("Unknown help topic [`endpoint` `skills`]"));
-        assert!(help_is_unknown_command("ovs-vsctl: unknown command 'foo'; use --help"));
-        assert!(help_is_unknown_command("Error: unknown subcommand \"bar\" for \"kind\""));
+        assert!(help_is_unknown_command(
+            "Unknown help topic [`endpoint` `skills`]"
+        ));
+        assert!(help_is_unknown_command(
+            "ovs-vsctl: unknown command 'foo'; use --help"
+        ));
+        assert!(help_is_unknown_command(
+            "Error: unknown subcommand \"bar\" for \"kind\""
+        ));
         assert!(!help_is_unknown_command(
             "Connect to Tailscale\n\nUSAGE\n  tailscale up [flags]"
         ));
