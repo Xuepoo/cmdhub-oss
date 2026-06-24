@@ -149,6 +149,13 @@ async fn scrape_target(conn: &rusqlite::Connection, target: &Target) -> Result<(
             continue;
         }
 
+        // Skip fabricated subcommands: a non-root node whose --help is an "unknown
+        // command/topic" error (glab/ovs-vsctl/kind exit 0 with such text) is not a real
+        // subcommand — don't bake it or recurse into it. The root is always kept.
+        if !sub_path.is_empty() && help_is_unknown_command(&help_output) {
+            continue;
+        }
+
         // The command path as a space-joined string (e.g. "wrangler d1 create"),
         // used to recognise and skip the title-echo line when picking a description.
         let cmd_str = if sub_path.is_empty() {
@@ -468,6 +475,17 @@ fn extract_description(help_text: &str, cmd_str: &str) -> String {
 /// into it would re-discover every sibling and explode the tree (89 subs -> 89x89).
 fn help_is_alias_of_parent(this_help: &str, parent_help: Option<&str>) -> bool {
     parent_help == Some(this_help)
+}
+
+/// True when a node's `--help` body is actually an "invalid command" error rather than
+/// real help. Some tools (glab, ovs-vsctl, kind) exit 0 but print e.g. "Unknown help
+/// topic [`x`]" / "unknown command" for a non-existent subcommand — the discovery pass
+/// then bakes a fake subcommand whose description is that error string. Skip those.
+fn help_is_unknown_command(help: &str) -> bool {
+    let low = help.to_lowercase();
+    low.contains("unknown help topic")
+        || low.contains("unknown command")
+        || low.contains("unknown subcommand")
 }
 
 /// Choose a command's description. The parent command-list one-liner (`list_desc`,
@@ -905,6 +923,16 @@ Unit Commands:
             pick_description("Frobnicate all the things\n\nUsage: foo ...", "foo", None),
             "Frobnicate all the things"
         );
+    }
+
+    #[test]
+    fn test_help_is_unknown_command() {
+        assert!(help_is_unknown_command("Unknown help topic [`endpoint` `skills`]"));
+        assert!(help_is_unknown_command("ovs-vsctl: unknown command 'foo'; use --help"));
+        assert!(help_is_unknown_command("Error: unknown subcommand \"bar\" for \"kind\""));
+        assert!(!help_is_unknown_command(
+            "Connect to Tailscale\n\nUSAGE\n  tailscale up [flags]"
+        ));
     }
 
     #[test]
