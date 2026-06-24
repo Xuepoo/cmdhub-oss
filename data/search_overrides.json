@@ -46,6 +46,8 @@
     "eza": {"topics_append": "list files directory modern ls replacement detailed long"},
     "top": {"topics_append": "display monitor running system processes live real-time cpu memory usage task activity procps"},
     "btop": {"topics_append": "resource monitor processes cpu memory live terminal top htop modern viewer"},
-    "aws.ec2.describe-instances": {"topics_append": "list show display ec2 instances describe running virtual machines aws"}
+    "aws.ec2.describe-instances": {"topics_append": "list show display ec2 instances describe running virtual machines aws"},
+    "aws.s3.mb": {"topics_append": "create make new storage bucket s3 aws object storage container"},
+    "aws.s3api.create-bucket": {"topics_append": "create make new storage bucket s3 aws object storage container"}
   }
 }
