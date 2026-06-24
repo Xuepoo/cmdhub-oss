@@ -463,6 +463,21 @@ pub fn search_cascading(
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(1.0);
+    // danger_pop scales the popularity prior DOWN for dangerous-risk tools, so a high-
+    // popularity destructive command (e.g. coreutils `unlink`/`rm`) can't ride the popularity
+    // boost to the top of a non-destructive query ("compress ... do not delete originals").
+    // Only the popularity term is scaled; FTS/vector contributions are untouched, so a
+    // genuinely-wanted destructive command still surfaces when the query actually asks for it.
+    // Calibrated to 0.75 (a GENTLE 25% trim): a single global knob can't tell a destructive
+    // query ("delete files" genuinely wants `rm`) from a non-destructive one ("compress ... do
+    // not delete" must NOT surface `unlink`) — both dangerous tools share the same popularity.
+    // An aggressive trim (0.25) drops `unlink` from the compress query but ALSO demotes `rm`
+    // out of "delete files" (golden 22→21). 0.75 drops `unlink` while keeping `rm` in top-5
+    // (golden held at 22/26). Env knob for offline calibration; golden-gated via eval_golden.py.
+    let danger_pop = std::env::var("CMDH_DANGER_POP")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.75);
     let mut top_apps = Vec::new();
     if let Some(ref vb) = vec_bytes {
         let mut app_stmt = conn.prepare(
@@ -495,6 +510,7 @@ pub fn search_cascading(
             pop_ranked AS ( \
                 SELECT ps.app_id, ps.fts_pos, ps.vec_pos, a.name as nm, \
                        COALESCE(a.popularity, 0.0) as pop, \
+                       COALESCE((SELECT r.risk_level FROM arguments r WHERE r.app_id = ps.app_id AND r.node_type = 'root' LIMIT 1), '') as risk, \
                        row_number() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
                 FROM pre_scored ps JOIN apps a ON ps.app_id = a.app_id \
             ), \
@@ -502,7 +518,7 @@ pub fn search_cascading(
                 SELECT app_id, nm, \
                        COALESCE((:cold_floor + (1.0 - :cold_floor) * pop) * 1.0 / (60.0 + fts_pos), 0.0) \
                        + COALESCE(1.0 / (60.0 + vec_pos), 0.0) \
-                       + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
+                       + (:pw_lin * pop + :pw_cube * pop * pop * pop) * (CASE WHEN risk = 'dangerous' THEN :danger_pop ELSE 1.0 END) as rrf_score \
                 FROM pop_ranked \
             ), \
             name_deduped AS ( \
@@ -520,6 +536,7 @@ pub fn search_cascading(
                 ":pw_lin": pw_lin,
                 ":pw_cube": pw_cube,
                 ":cold_floor": cold_floor,
+                ":danger_pop": danger_pop,
             },
             |row| row.get::<_, String>(0),
         )?;
@@ -541,13 +558,14 @@ pub fn search_cascading(
             pop_ranked AS ( \
                 SELECT ftso.app_id, ftso.fts_pos, a.name as nm, \
                        COALESCE(a.popularity, 0.0) as pop, \
+                       COALESCE((SELECT r.risk_level FROM arguments r WHERE r.app_id = ftso.app_id AND r.node_type = 'root' LIMIT 1), '') as risk, \
                        row_number() OVER (ORDER BY COALESCE(a.popularity, 0.0) DESC) as pop_pos \
                 FROM fts_ordered ftso JOIN apps a ON ftso.app_id = a.app_id \
             ), \
             scored AS ( \
                 SELECT app_id, nm, \
                        COALESCE((:cold_floor + (1.0 - :cold_floor) * pop) * 1.0 / (60.0 + fts_pos), 0.0) \
-                       + :pw_lin * pop + :pw_cube * pop * pop * pop as rrf_score \
+                       + (:pw_lin * pop + :pw_cube * pop * pop * pop) * (CASE WHEN risk = 'dangerous' THEN :danger_pop ELSE 1.0 END) as rrf_score \
                 FROM pop_ranked \
             ), \
             name_deduped AS ( \
@@ -564,6 +582,7 @@ pub fn search_cascading(
                 ":pw_lin": pw_lin,
                 ":pw_cube": pw_cube,
                 ":cold_floor": cold_floor,
+                ":danger_pop": danger_pop,
             },
             |row| row.get::<_, String>(0),
         )?;

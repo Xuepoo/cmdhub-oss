@@ -462,6 +462,10 @@ def _apply_overrides(arguments: list[dict], apps: list[dict], overrides_path: st
             a["topics"] = patch["topics"]
         if "topics_append" in patch:
             a["topics"] = ((a.get("topics") or "") + " " + patch["topics_append"]).strip()
+        # example_template is a USAGE hint (not indexed for search); patching it corrects
+        # what an agent runs after picking the tool (e.g. `unzip -l` to view without extracting).
+        if "example_template" in patch:
+            a["example_template"] = patch["example_template"]
         n_patch += 1
 
     n_add = 0

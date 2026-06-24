@@ -48,6 +48,9 @@
     "btop": {"topics_append": "resource monitor processes cpu memory live terminal top htop modern viewer"},
     "aws.ec2.describe-instances": {"topics_append": "list show display ec2 instances describe running virtual machines aws"},
     "aws.s3.mb": {"topics_append": "create make new storage bucket s3 aws object storage container"},
-    "aws.s3api.create-bucket": {"topics_append": "create make new storage bucket s3 aws object storage container"}
+    "aws.s3api.create-bucket": {"topics_append": "create make new storage bucket s3 aws object storage container"},
+    "unzip": {"example_template": "unzip -l {{archive.zip}}"},
+    "zipinfo": {"example_template": "zipinfo {{archive.zip}}"},
+    "7zip": {"example_template": "7z l {{archive.7z}}"}
   }
 }
