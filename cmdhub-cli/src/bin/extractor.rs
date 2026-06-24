@@ -605,6 +605,23 @@ fn parse_subcommands(help_text: &str, cmd_prefix: &[String]) -> Vec<(String, Opt
             if indent > base {
                 continue; // deeper than the entry column -> wrapped continuation line
             }
+            // Comma-separated bare-word list (npm "access, adduser, audit, ci,"): the
+            // WHOLE line is command tokens separated by commas, no description column.
+            // Detected when the trimmed line has a comma and every comma-part is a single
+            // valid token (no spaces -> not prose). Split and push them all, then move on.
+            if trimmed.contains(',') {
+                let parts: Vec<&str> = trimmed
+                    .split(',')
+                    .map(|p| p.trim())
+                    .filter(|p| !p.is_empty())
+                    .collect();
+                if !parts.is_empty() && parts.iter().all(|p| !p.contains(' ') && valid(p)) {
+                    for p in parts {
+                        push(p, None, &mut subcommands);
+                    }
+                    continue;
+                }
+            }
             if let Some(first_raw) = line.split_whitespace().next() {
                 let first = first_raw.trim_end_matches(',').trim_end_matches(':');
                 // Skip lines that begin with the binary name — those are prefix-style
@@ -928,6 +945,54 @@ Unit Commands:
             pick_description("Frobnicate all the things\n\nUsage: foo ...", "foo", None),
             "Frobnicate all the things"
         );
+    }
+
+    #[test]
+    fn test_parse_subcommands_comma_separated_list() {
+        // npm: "All commands:" then comma-separated bare words, multiple per (wrapped) line.
+        let npm = "\
+npm <command>
+
+All commands:
+
+    access, adduser, audit, ci,
+    completion, config, install, run,
+    test, publish, uninstall, version
+
+Specify configs ...
+";
+        let subs = parse_subcommands(npm, &["npm".to_string()]);
+        let names: Vec<String> = subs.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "access",
+                "adduser",
+                "audit",
+                "ci",
+                "completion",
+                "config",
+                "install",
+                "run",
+                "test",
+                "publish",
+                "uninstall",
+                "version"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_comma_list_does_not_break_description_commas() {
+        // A normal entry whose DESCRIPTION contains commas must NOT be comma-split.
+        let help = "\
+Commands:
+  sync       Download, verify, and install packages
+  clean      Remove old, unused files
+";
+        let subs = parse_subcommands(help, &["pac".to_string()]);
+        let names: Vec<String> = subs.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, vec!["sync", "clean"]);
     }
 
     #[test]
