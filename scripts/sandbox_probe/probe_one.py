@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from . import container
 from .queue import WorkItem
@@ -13,7 +14,7 @@ from .queue import WorkItem
 class ProbeResult:
     status: str  # merged-candidate | no-subcommands | failed
     reason: str  # probe-ok | no-subcommands | install-fail | no-package | timeout
-    scratch_db: Path | None = None
+    scratch_db: Optional[Path] = None
 
 
 def probe_one(item: WorkItem, extractor: Path, work_root: Path) -> ProbeResult:
@@ -35,7 +36,12 @@ def probe_one(item: WorkItem, extractor: Path, work_root: Path) -> ProbeResult:
         if not container.probe(name, extractor, scratch, targets):
             return ProbeResult("failed", "timeout")
     except Exception:
-        container._run(["podman", "rm", "-f", name], timeout=30)
+        # Best-effort cleanup of a half-created container; must use the configured
+        # engine (not a hardcoded "podman") and never raise from the except path.
+        try:
+            container._run([container.ENGINE, "rm", "-f", name], timeout=30)
+        except Exception:
+            pass
         return ProbeResult("failed", "timeout")
 
     db = scratch / "cmdhub" / "cmdhub.db"
