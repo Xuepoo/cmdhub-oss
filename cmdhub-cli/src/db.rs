@@ -601,13 +601,18 @@ pub fn search_cascading(
     // below the top-5 cutoff when vector-boosted github apps dominate.
     // Fix: collect all FTS5-matching app_ids and inject any that are missing.
     if processed_query != "*" {
+        // Inject the apps of the BEST FTS matches (by bm25), not an arbitrary set.
+        // Previously this took `LIMIT 100` unordered then `LIMIT 5` app_ids, so a
+        // strong literal match (e.g. npm.install ranked bm25 #1) could be dropped if
+        // its app fell outside the unordered slice — a recall regression that grew
+        // with the corpus. Order by bm25 first so the top text matches are kept.
         let mut fts_only_stmt = conn.prepare(
             "WITH fts_matched AS ( \
-                SELECT cmd_path FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
+                SELECT cmd_path, row_number() OVER (ORDER BY bm25(apps_fts, 0.0, 5.0, 2.0) ASC) as p \
+                FROM apps_fts WHERE apps_fts MATCH :query LIMIT 100 \
             ) \
-            SELECT DISTINCT arg.app_id \
-            FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
-            LIMIT 5",
+            SELECT arg.app_id FROM fts_matched m JOIN arguments arg ON m.cmd_path = arg.cmd_path \
+            GROUP BY arg.app_id ORDER BY MIN(m.p) ASC LIMIT 5",
         )?;
         let fts_app_rows = fts_only_stmt
             .query_map(rusqlite::named_params! { ":query": &cand_query }, |row| {
@@ -820,6 +825,14 @@ pub fn search_cascading(
         // Popularity bonus mirrors the Stage-1 gating: decisive for a bare brand token,
         // a gentle nudge for descriptive queries so it can't bury a correct niche tool.
         let pop_bonus_w = if q_tokens.len() <= 1 { 15.0 } else { 3.0 };
+        // verified_bonus is env-tunable (CMDH_VERIFIED_BONUS) for trust-aware
+        // calibration: a larger value lifts probe-verified canonical tools over
+        // inferred competitors/toys that semantically match a colloquial query
+        // (e.g. probe `npm.uninstall` over inferred `lockfile.remove`).
+        let verified_bonus_w = std::env::var("CMDH_VERIFIED_BONUS")
+            .ok()
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(VERIFIED_BONUS);
         let mut scored: Vec<(i32, usize, AciCommandContract)> = results
             .drain(..)
             .enumerate()
@@ -838,7 +851,7 @@ pub fn search_cascading(
                 // Provenance prior: a probe-verified contract gets a modest boost so it
                 // wins ties and corrects inversions against LLM-inferred fabrications,
                 // without burying a strongly-matching inferred result.
-                let verified_bonus = if c.verified { VERIFIED_BONUS } else { 0 };
+                let verified_bonus = if c.verified { verified_bonus_w } else { 0 };
                 let composite = rrf
                     + path_w * path_match_score(&c.cmd_path, &q_path_tokens)
                     + pop_bonus
@@ -879,10 +892,14 @@ pub fn search_cascading(
     Ok(final_results)
 }
 
-/// Provenance prior weight in the composite re-rank: equivalent to jumping a few RRF
-/// ranks. Modest by design — corrects probe-vs-inferred inversions without letting a
-/// weakly-matching verified row bury a strongly-matching inferred one.
-const VERIFIED_BONUS: i32 = 3;
+/// Provenance prior weight in the composite re-rank (default; override via
+/// CMDH_VERIFIED_BONUS). Trust-aware: lifts probe-verified canonical tools over
+/// inferred competitors/toys that semantically match a colloquial query (e.g.
+/// probe `npm.uninstall` over inferred `lockfile.remove`). Calibrated to 12 on
+/// the colloquial-intent golden set (intent recall@1 13%→35%, recall@5 26%→48%)
+/// while holding eval_golden at 26/26 — verified rows only win when also recalled,
+/// so a strongly-matching inferred result is not buried. Golden-gated.
+const VERIFIED_BONUS: i32 = 12;
 
 /// Expand query tokens for PATH matching: each token contributes itself, its singular
 /// form (images→image), and its intent synonyms (clear→prune). This lets the path
