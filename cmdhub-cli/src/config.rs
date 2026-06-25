@@ -113,7 +113,7 @@ pub fn load_or_create_config(custom_path: Option<PathBuf>) -> Result<Config> {
     let config_path = resolve_config_path(custom_path);
     let default_xdg_path = get_config_dir().join("config.toml");
 
-    if !config_path.exists() {
+    let mut config = if !config_path.exists() {
         if config_path != default_xdg_path {
             anyhow::bail!(
                 "Custom configuration file does not exist at {:?}",
@@ -131,31 +131,37 @@ pub fn load_or_create_config(custom_path: Option<PathBuf>) -> Result<Config> {
             "[INFO] Created default configuration file at: {}",
             config_path.display()
         );
-        Ok(default_config)
+        default_config
     } else {
         let toml_str = fs::read_to_string(&config_path).context("Failed to read config file")?;
-        let mut config: Config =
-            toml::from_str(&toml_str).context("Failed to parse config TOML")?;
+        toml::from_str(&toml_str).context("Failed to parse config TOML")?
+    };
 
-        // Cloud-native overrides via Environment Variables
-        if let Ok(api_url) = std::env::var("CMDH_API_URL") {
-            if !api_url.is_empty() {
-                config.api_url = api_url;
-            }
+    // Cloud-native overrides via Environment Variables.
+    // Applied for both freshly-created and existing configs so that ephemeral
+    // environments (CI, containers) can steer the client without a config file.
+    if let Ok(api_url) = std::env::var("CMDH_API_URL") {
+        if !api_url.is_empty() {
+            config.api_url = api_url;
         }
-        if let Ok(update_url) = std::env::var("CMDH_UPDATE_URL") {
-            if !update_url.is_empty() {
-                config.update_url = update_url;
-            }
-        }
-        if let Ok(model_url) = std::env::var("CMDH_MODEL_URL") {
-            if !model_url.is_empty() {
-                config.vector.model_url = Some(model_url);
-            }
-        }
-
-        Ok(config)
     }
+    if let Ok(update_url) = std::env::var("CMDH_UPDATE_URL") {
+        if !update_url.is_empty() {
+            config.update_url = update_url;
+        }
+    }
+    if let Ok(model_url) = std::env::var("CMDH_MODEL_URL") {
+        if !model_url.is_empty() {
+            config.vector.model_url = Some(model_url);
+        }
+    }
+    if let Ok(model_path) = std::env::var("CMDH_MODEL_PATH") {
+        if !model_path.is_empty() {
+            config.vector.model_path = Some(model_path);
+        }
+    }
+
+    Ok(config)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

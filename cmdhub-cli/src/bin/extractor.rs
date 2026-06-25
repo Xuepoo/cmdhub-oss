@@ -479,7 +479,7 @@ fn help_is_alias_of_parent(this_help: &str, parent_help: Option<&str>) -> bool {
 
 /// True when a node's `--help` body is actually an "invalid command" error rather than
 /// real help. Some tools (glab, ovs-vsctl, kind) exit 0 but print e.g. "Unknown help
-/// topic [`x`]" / "unknown command" for a non-existent subcommand — the discovery pass
+/// topic \[`x`\]" / "unknown command" for a non-existent subcommand — the discovery pass
 /// then bakes a fake subcommand whose description is that error string. Skip those.
 fn help_is_unknown_command(help: &str) -> bool {
     let low = help.to_lowercase();

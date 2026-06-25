@@ -41,10 +41,27 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      # Tests spawn many `cmdh` subprocesses; without a pre-fetched model each
+      # one would race to download the 127MB embedding model to the same path,
+      # deadlocking the suite. Point every subprocess at one cached copy.
+      CMDH_MODEL_PATH: ${{ github.workspace }}/.cache-model/model.onnx
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Cache embedding model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache-model
+          key: cmdh-model-828e1496
+      - name: Fetch embedding model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ github.workspace }}/.cache-model"
+          curl -fsSL https://cdn.cmdhub.org/models/bge-micro-v2.onnx \
+            -o "${{ github.workspace }}/.cache-model/model.onnx"
       - run: cargo test --all-features --workspace
 
   docs:
