@@ -33,9 +33,10 @@ def subtree_size(conn: sqlite3.Connection, tool: str) -> int:
     ).fetchone()[0]
 
 
-def probe_one(tool: str, extractor: str) -> str:
+def probe_one(tool: str, extractor: str) -> Path:
     """Run the extractor for a single tool in an isolated XDG home.
-    Returns the path to the produced probe DB. Raises on failure."""
+    Returns the temp work dir (caller must rmtree it after reading the DB).
+    The probe DB lives at <work>/.local/share/cmdhub/cmdhub.db. Raises on failure."""
     work = Path(tempfile.mkdtemp(prefix=f"probe-{tool}-"))
     cfg = work / ".config" / "cmdhub"
     cfg.mkdir(parents=True)
@@ -52,8 +53,9 @@ def probe_one(tool: str, extractor: str) -> str:
                    timeout=600, check=True)
     probe_db = work / ".local/share" / "cmdhub" / "cmdhub.db"
     if not probe_db.exists():
+        shutil.rmtree(work, ignore_errors=True)
         raise RuntimeError(f"extractor produced no DB for {tool}")
-    return str(probe_db)
+    return work
 
 
 def main() -> None:
@@ -98,15 +100,19 @@ def main() -> None:
             ck[tool] = {"status": "skipped-giant", "before": before}
             continue
         try:
-            probe_db = probe_one(tool, a.extractor)
+            work = probe_one(tool, a.extractor)
         except Exception as e:
             ck[tool] = {"status": "probe-failed", "error": str(e)[:200]}
             print(f"[reprobe] {tool}: PROBE FAILED {e}")
             Path(a.checkpoint).write_text(json.dumps(ck, indent=1))
             continue
-        r = subprocess.run([sys.executable, a.merge_script, "--master", a.master,
-                            "--probe-db", probe_db, "--tool", tool, "--app-id", app_id],
-                           capture_output=True, text=True)
+        probe_db = str(work / ".local/share" / "cmdhub" / "cmdhub.db")
+        try:
+            r = subprocess.run([sys.executable, a.merge_script, "--master", a.master,
+                                "--probe-db", probe_db, "--tool", tool, "--app-id", app_id],
+                               capture_output=True, text=True)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
         if r.returncode != 0:
             ck[tool] = {"status": "merge-failed", "error": (r.stderr or "")[:200]}
             print(f"[reprobe] {tool}: MERGE FAILED {r.stderr[:120]}")
