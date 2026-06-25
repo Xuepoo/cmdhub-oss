@@ -32,6 +32,7 @@ def _db():
     c.execute("CREATE TABLE arguments (cmd_path TEXT, app_id TEXT, node_type TEXT, provenance TEXT, description TEXT, topics TEXT)")
     c.executemany("INSERT INTO apps VALUES (?,?)", [("a.npm", 0.9), ("a.obscure", 0.1)])
     c.executemany("INSERT INTO arguments VALUES (?,?,?,?,?,?)", [
+        ("npm", "a.npm", "root", "probe", "Node package manager", None),   # root, empty -> selected
         ("npm.uninstall", "a.npm", "sub", "probe", "Remove a package", None),
         ("npm.install", "a.npm", "sub", "probe", "Install deps", ""),
         ("npm.access", "a.npm", "sub", "probe", "Manage access", "npm access existing"),
@@ -40,13 +41,13 @@ def _db():
     return c
 
 
-def test_select_targets_only_empty_topics():
+def test_select_targets_includes_roots_and_empty_subs():
     rows = et.select_targets(_db(), tools=None, min_pop=0.0, limit=100)
     paths = {r[0] for r in rows}
-    assert paths == {"npm.uninstall", "npm.install", "obscure.x"}
+    assert paths == {"npm", "npm.uninstall", "npm.install", "obscure.x"}
 
 
 def test_select_targets_min_pop_and_tools():
     rows = et.select_targets(_db(), tools=["npm"], min_pop=0.5, limit=100)
     paths = {r[0] for r in rows}
-    assert paths == {"npm.uninstall", "npm.install"}
+    assert paths == {"npm", "npm.uninstall", "npm.install"}

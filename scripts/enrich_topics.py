@@ -51,10 +51,12 @@ def parse_topics(raw: str) -> str:
 
 
 def select_targets(conn, tools, min_pop, limit):
+    # Both roots (single-command tools like find/du/pkill) and subcommands need
+    # topics — terse probe text + empty topics is what blocks colloquial recall.
     sql = (
         "SELECT ar.cmd_path, ar.description, ar.app_id FROM arguments ar "
         "JOIN apps a ON a.app_id = ar.app_id "
-        "WHERE ar.provenance='probe' AND ar.node_type='sub' "
+        "WHERE ar.provenance='probe' AND ar.node_type IN ('root','sub') "
         "AND (ar.topics IS NULL OR ar.topics='') AND COALESCE(a.popularity,0.0) >= ?"
     )
     rows = conn.execute(sql, [min_pop]).fetchall()
