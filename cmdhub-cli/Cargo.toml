@@ -45,7 +45,7 @@ fs2 = { workspace = true }
 toml = "0.8"
 uuid = { workspace = true }
 chrono = { workspace = true }
-sha2 = "0.10"
+sha2 = "0.11"
 base64 = "0.22"
 tract-onnx = { workspace = true }
 flate2 = { workspace = true }
