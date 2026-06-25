@@ -46,6 +46,8 @@ jobs:
       # one would race to download the 127MB embedding model to the same path,
       # deadlocking the suite. Point every subprocess at one cached copy.
       CMDH_MODEL_PATH: ${{ github.workspace }}/.cache-model/model.onnx
+      # Pinned SHA-256 of bge-small-en-v1.5 (must match installer.rs default).
+      CMDH_MODEL_SHA256: 828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -55,13 +57,22 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.cache-model
-          key: cmdh-model-828e1496
+          key: cmdh-model-${{ env.CMDH_MODEL_SHA256 }}
       - name: Fetch embedding model
         if: steps.model-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "${{ github.workspace }}/.cache-model"
           curl -fsSL https://cdn.cmdhub.org/models/bge-micro-v2.onnx \
-            -o "${{ github.workspace }}/.cache-model/model.onnx"
+            -o "$CMDH_MODEL_PATH"
+      - name: Verify embedding model integrity
+        # Always runs, so a poisoned cache entry is rejected too, not just a
+        # fresh download. On mismatch, delete the file and fail the job.
+        run: |
+          if ! echo "$CMDH_MODEL_SHA256  $CMDH_MODEL_PATH" | sha256sum -c -; then
+            rm -f "$CMDH_MODEL_PATH"
+            echo "::error::Embedding model SHA-256 mismatch — refusing to run tests"
+            exit 1
+          fi
       - run: cargo test --all-features --workspace
 
   docs:
