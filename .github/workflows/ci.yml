@@ -54,7 +54,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Cache embedding model
         id: model-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.cache-model
           key: cmdh-model-${{ env.CMDH_MODEL_SHA256 }}
